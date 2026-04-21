@@ -1,0 +1,210 @@
+import pandas as pd
+import numpy as np
+import pyodbc
+from catboost import CatBoostRegressor, Pool
+from datetime import datetime, timedelta
+import warnings
+import sys
+import time
+
+warnings.filterwarnings('ignore')
+
+# ==========================================
+# 1. КОНФИГУРАЦИЯ И ЛОГИРОВАНИЕ
+# ==========================================
+SQL_CONFIG = {
+    'driver': 'SQL Server',
+    'server': '10.0.0.163',
+    'database': 'optimum_lipetsk',
+    'user': 'optimum',
+    'password': '123456qqq'
+}
+
+FEATURES = ['BranchID', 'PointClass', 'PointType', 'MicroRegionID', 'CategoryID', 'Month', 'DayOfWeek', 'DaysSinceLastSale', 'SalesMomentum', 'IsPreHoliday', 'PointCategoryClass', 'PointTotalClass']
+CAT_FEATURES = ['BranchID', 'PointClass', 'PointType', 'MicroRegionID', 'CategoryID', 'PointCategoryClass', 'PointTotalClass']
+
+def log(msg, level="INFO"):
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"[{ts}] [{level}] {msg}"); sys.stdout.flush()
+
+def get_conn(): 
+    return pyodbc.connect(f"DRIVER={{{SQL_CONFIG['driver']}}};SERVER={SQL_CONFIG['server']};DATABASE={SQL_CONFIG['database']};UID={SQL_CONFIG['user']};PWD={SQL_CONFIG['password']}")
+
+# ==========================================
+# 2. ВСПОМОГАТЕЛЬНЫЕ МОДУЛИ
+# ==========================================
+def apply_tt_profiling(train_df, predict_df):
+    log(">>> ШАГ: Профилирование классов ТТ (Category & Total)...")
+    def get_q_labels(group):
+        if len(group) >= 10: return pd.qcut(group.rank(method='first'), 10, labels=False) + 1
+        return (group.rank(method='first') * 10 / len(group)).astype(int).clip(1, 10)
+
+    cat_stats = train_df.groupby(['PointID', 'CategoryID'])['TargetCatWallet'].mean().reset_index()
+    cat_stats['PointCategoryClass'] = cat_stats.groupby('CategoryID')['TargetCatWallet'].transform(get_q_labels)
+    
+    total_stats = train_df.groupby(['PointID', 'VisitDate'])['TargetCatWallet'].sum().reset_index()
+    total_point_avg = total_stats.groupby('PointID')['TargetCatWallet'].mean().reset_index()
+    total_point_avg['PointTotalClass'] = get_q_labels(total_point_avg['TargetCatWallet'])
+
+    train_df = train_df.merge(cat_stats[['PointID', 'CategoryID', 'PointCategoryClass']], on=['PointID', 'CategoryID'], how='left')
+    predict_df = predict_df.merge(cat_stats[['PointID', 'CategoryID', 'PointCategoryClass']], on=['PointID', 'CategoryID'], how='left')
+    train_df = train_df.merge(total_point_avg[['PointID', 'PointTotalClass']], on='PointID', how='left')
+    predict_df = predict_df.merge(total_point_avg[['PointID', 'PointTotalClass']], on='PointID', how='left')
+
+    for df in [train_df, predict_df]:
+        df['PointCategoryClass'] = df['PointCategoryClass'].fillna(5).astype(int)
+        df['PointTotalClass'] = df['PointTotalClass'].fillna(5).astype(int)
+    log("<<< Кластеризация завершена.")
+    return train_df, predict_df
+
+def apply_client_spec_filter(df):
+    log(">>> ШАГ: Фильтрация ассортимента по специфике (Attr 2068)...")
+    SPEC_MAP = {
+        '550071': [13, 33, 25], '800039': [24, 42, 11, 25], '800040': [11, 25],
+        '800041': [24, 42, 25], '800135': [36, 37, 38, 25], '1081264': [15, 25]
+    }
+    filtered_groups = []
+    for pid, group in df.groupby('PointID'):
+        spec_id = str(group['ClientSpec'].iloc[0])
+        active_cats = [int(x.strip()) for x in str(group['ActiveCats'].iloc[0]).split(',') if x.strip().isdigit()]
+        if spec_id in SPEC_MAP:
+            allowed = set(SPEC_MAP[spec_id] + active_cats)
+            group = group[group['CategoryID'].astype(int).isin(allowed)]
+        filtered_groups.append(group)
+    log("<<< Фильтрация ассортимента завершена.")
+    return pd.concat(filtered_groups) if filtered_groups else df
+
+def preprocess(df, name="Dataset"):
+    log(f">>> ШАГ: Предобработка {name}...")
+    df = df.copy()
+    if 'VisitDate' in df.columns:
+        df['VisitDate'] = pd.to_datetime(df['VisitDate'])
+        df['Month'], df['DayOfWeek'] = df['VisitDate'].dt.month, df['VisitDate'].dt.dayofweek
+        h = [(1,1),(1,7),(2,23),(3,8),(5,1),(5,9),(6,12),(11,4),(12,31)]
+        df['IsPreHoliday'] = df['VisitDate'].apply(lambda d: 1 if any((d + timedelta(days=i)).month == m and (d + timedelta(days=i)).day == day for i in range(1,4) for m, day in h) else 0)
+    
+    for col in CAT_FEATURES + ['GroupID']:
+        if col in df.columns: df[col] = df[col].astype(str).str.strip().replace(['None', 'nan', ''], 'Unknown')
+    
+    num_cols = ['TargetCatWallet', 'LastAvgBrandQty', 'LastAvgBrandSum', 'DaysSinceLastSale', 'DaysUntilNextVisit', 'AvgClusterSales', 'AvgPrice', 'BrandQuantum', 'PriorityWeight', 'IsTurboBrand']
+    for col in num_cols:
+        if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
+    df['SalesMomentum'] = df['DaysSinceLastSale'].apply(lambda x: 1.2 if 0 < x <= 14 else 0.8 if x > 45 else 1.0) if 'DaysSinceLastSale' in df.columns else 1.0
+    return df
+
+# ==========================================
+# 3. SAO ENGINE v7.1
+# ==========================================
+def apply_sao_logic(predict_df, rules_df):
+    log(">>> ШАГ: Запуск SAO Logic v7.1 (Argumentation & Turbo)...")
+    rules_df['CategoryID'], rules_df['GroupID'] = rules_df['CategoryID'].astype(str), rules_df['GroupID'].astype(str)
+    data = predict_df.merge(rules_df.drop_duplicates('GroupID'), on=['CategoryID', 'GroupID'], how='inner')
+    
+    def calc_score(row):
+        score = 0
+        if row.get('LastAvgBrandQty', 0) > 0: score += 1
+        if row.get('PriorityWeight', 0) > 0: score += row['PriorityWeight']
+        if row.get('AvgClusterSales', 0) > 0: score += 2
+        if row.get('SalesMomentum', 1.0) > 1.0: score += 0.5
+        if row.get('IsPreHoliday', 0) == 1: score += 1.0
+        return score
+
+    data['FinalScore'] = data.apply(calc_score, axis=1)
+    day_of_year = datetime.now().timetuple().tm_yday
+    final_recs = []
+
+    for (pid, cid), group in data.groupby(['PointID', 'CategoryID']):
+        # Ротация Turbo
+        turbo_pool = group[(group['IsTurboBrand'] == 1) & (group['LastAvgBrandQty'] == 0)].sort_values(by='GroupID')
+        turbo_id = turbo_pool.iloc[day_of_year % len(turbo_pool)]['GroupID'] if not turbo_pool.empty else None
+        
+        row_ref = group.iloc[0]
+        t_class, c_class = int(row_ref.get('PointTotalClass', 5)), int(row_ref.get('PointCategoryClass', 5))
+        smart_limit = (1.10 + ((t_class - c_class) * 0.07)) if t_class > c_class else 1.10
+        if row_ref.get('SalesMomentum', 1.0) < 1.0: smart_limit = 1.05
+        
+        cat_wallet = max(0, group['PredictedCatWallet'].max()) * smart_limit
+        current_spent, new_exp_count = 0, 0
+        
+        group['IsTurboToday'] = (group['GroupID'] == turbo_id).astype(int)
+        group = group.sort_values(by=['IsTurboToday', 'FinalScore'], ascending=[False, False])
+        
+        for _, r in group.iterrows():
+            price, quantum = r.get('AvgPrice', 0), r.get('BrandQuantum', 0)
+            if price <= 0 or quantum <= 0: continue
+            
+            # АРГУМЕНТАЦИЯ
+            avg_neighbor = int(r.get('AvgClusterSales', 0))
+            my_avg = int(r.get('LastAvgBrandSum', 0))
+            potential_msg = ""
+            if avg_neighbor > 0:
+                if my_avg > 0:
+                    gap = avg_neighbor - my_avg
+                    if gap > 0: potential_msg += f"Разрыв: вы берете на {my_avg:,} руб., соседи — на {avg_neighbor:,} (на {gap:,} больше). ".replace(',', ' ')
+                else: potential_msg += f"Рынок: соседи закупают этот хит в ср. на {avg_neighbor:,} руб. ".replace(',', ' ')
+            if t_class > c_class: potential_msg += f"Потенциал ТТ: +{(t_class-c_class)*15}% (класс {t_class} vs {c_class}). "
+
+            is_reg = my_avg > 0
+            if r['GroupID'] == turbo_id:
+                qty, reason, comment = quantum, 'Strategy_Turbo', f"ТУРБО: Приоритет дня! {potential_msg}"
+            elif is_reg:
+                qty_replenish = round((r['LastAvgBrandQty']/7*r['DaysUntilNextVisit']*r.get('SalesMomentum', 1.0))/quantum)*quantum
+                qty_limit = (max(0, r['PredictedCatWallet'])/price//quantum)*quantum
+                qty = min(qty_replenish, qty_limit) if qty_limit > 0 else qty_replenish
+                reason, comment = 'RegularSales', f"База: запас на {int(r['DaysUntilNextVisit'])} дн. {potential_msg}"
+            elif r.get('PriorityWeight', 0) > 0:
+                qty, reason = quantum, ('Strategy_ClusterHit' if avg_neighbor > 0 else 'Strategy')
+                comment = f"Стратегия: план развития. {potential_msg}"
+            elif avg_neighbor > 0 and new_exp_count < 2:
+                qty, reason, new_exp_count = quantum, 'ClusterHit', new_exp_count + 1
+                comment = f"Аналитика: хит у соседей. {potential_msg}"
+            else: continue
+
+            cost = qty * price
+            if qty > 0 and (current_spent + cost) <= cat_wallet:
+                final_recs.append({'PointID': pid, 'CategoryID': cid, 'GroupID': r['GroupID'], 'RecQty': qty, 'IsPriority': 1 if not is_reg else 0, 'Reason': reason, 'ActionComment': comment.strip(), 'CatBudget': cat_wallet, 'GroupBudget': r['PredictedCatWallet']})
+                current_spent += cost
+    return pd.DataFrame(final_recs)
+
+# ==========================================
+# 4. MAIN
+# ==========================================
+if __name__ == "__main__":
+    start_total = time.time()
+    try:
+        log("=== СТАРТ SMART AUTO ORDERING v7.1 ===")
+        with get_conn() as conn:
+            log("Загрузка данных из SQL...")
+            train_raw = pd.read_sql("EXEC SNS_ML_Get_Training_Data", conn)
+            predict_raw = pd.read_sql("EXEC SNS_ML_Get_Today_Data", conn)
+            rules_raw = pd.read_sql("EXEC SNS_ML_Get_Brand_Rules", conn)
+
+        train_df, predict_df = apply_tt_profiling(train_raw, predict_raw)
+        predict_df = apply_client_spec_filter(predict_df)
+        
+        train_p = preprocess(train_df, "Обучение")
+        predict_p = preprocess(predict_df, "Прогноз")
+        rules_p = preprocess(rules_raw, "Справочник")
+
+        log("Обучение CatBoost (Log-MAE)...")
+        y_log = np.log1p(train_p['TargetCatWallet'])
+        model = CatBoostRegressor(iterations=1000, depth=6, learning_rate=0.05, loss_function='MAE', verbose=200, random_seed=42)
+        model.fit(Pool(train_p[FEATURES], y_log, cat_features=CAT_FEATURES))
+        
+        predict_p['PredictedCatWallet'] = np.expm1(model.predict(predict_p[FEATURES]))
+        final_orders = apply_sao_logic(predict_p, rules_p)
+
+        if not final_orders.empty:
+            final_orders = final_orders.drop_duplicates(subset=['PointID', 'GroupID'])
+            data_to_sql = [(datetime.now().strftime('%Y-%m-%d'), int(r.PointID), int(r.CategoryID), int(r.GroupID), float(r.RecQty), int(r.IsPriority), str(r.Reason), str(r.ActionComment), float(r.CatBudget), float(r.GroupBudget)) for r in final_orders.itertuples(index=False)]
+            with get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM SNS_ML_Recommendations WHERE CalculationDate = CAST(GETDATE() as DATE)")
+                cursor.executemany("INSERT INTO SNS_ML_Recommendations (CalculationDate, PointID, CategoryID, GroupID, RecQty, IsPriority, Reason, ActionComment, CatBudget, GroupBudget) VALUES (?,?,?,?,?,?,?,?,?,?)", data_to_sql)
+                conn.commit()
+            log(f"УСПЕШНО: Записано {len(data_to_sql)} строк за {time.time()-start_total:.2f} сек.")
+        log("=== ЗАВЕРШЕНО УСПЕШНО ===")
+    except Exception as e:
+        log(f"КРИТИЧЕСКАЯ ОШИБКА: {e}", "ERROR")
+        import traceback; log(traceback.format_exc(), "ERROR")
