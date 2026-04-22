@@ -973,7 +973,13 @@ def main():
         logger.info("Выполнение прогнозирования...")
         
         # Подготовка тестовых данных (те же признаки)
-        X_test = df_test[feature_cols].copy()
+        # Фильтрация feature_cols только по существующим колонкам в df_test
+        available_feature_cols = [col for col in feature_cols if col in df_test.columns]
+        missing_features = set(feature_cols) - set(available_feature_cols)
+        if missing_features:
+            logger.warning(f"Отсутствуют следующие признаки в тестовых данных: {missing_features}")
+        
+        X_test = df_test[available_feature_cols].copy()
         
         # Заполнение пропусков в категориальных признаках значением 'Unknown'
         for col in categorical_features:
