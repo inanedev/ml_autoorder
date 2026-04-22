@@ -258,7 +258,7 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
             break
     
     outlet_col = None
-    for col_name in ['outlet_id', 'OutletID', 'OUTLET_ID', 'outletId']:
+    for col_name in ['outlet_id', 'OutletID', 'OUTLET_ID', 'outletId', 'PointID']:
         if col_name in df.columns:
             outlet_col = col_name
             break
@@ -453,7 +453,7 @@ def add_sales_features(df: pd.DataFrame, start_date: str, end_date: str) -> pd.D
             break
     
     outlet_col = None
-    for col_name in ['outlet_id', 'OutletID', 'OUTLET_ID', 'outletId']:
+    for col_name in ['outlet_id', 'OutletID', 'OUTLET_ID', 'outletId', 'PointID']:
         if col_name in df.columns:
             outlet_col = col_name
             break
@@ -465,7 +465,7 @@ def add_sales_features(df: pd.DataFrame, start_date: str, end_date: str) -> pd.D
             break
     
     amount_col = None
-    for col_name in ['sales_amount', 'SalesAmount', 'SALES_AMOUNT', 'amount', 'Amount', 'sum', 'Sum']:
+    for col_name in ['sales_amount', 'SalesAmount', 'SALES_AMOUNT', 'amount', 'Amount', 'sum', 'Sum', 'SumRoubles']:
         if col_name in df.columns:
             amount_col = col_name
             break
