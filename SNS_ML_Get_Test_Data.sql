@@ -41,6 +41,8 @@ GO
  *   is_month_end                  - Флаг конца месяца
  *   day_of_month                  - День месяца
  *   day_of_year                   - День года
+ *   days_to_holiday               - Дней до ближайшего праздника
+ *   days_from_holiday             - Дней от последнего праздника
  *   
  *   === Фичи истории заказов ===
  *   Days_Since_Last_Order_Category - Дней назад точка брала эту категорию
@@ -86,6 +88,9 @@ BEGIN
             RAISERROR('Параметр @TargetDate должен быть заполнен', 16, 1);
             RETURN -1;
         END
+
+        -- Установка первого дня недели = понедельник (как в Python .dt.dayofweek)
+        SET DATEFIRST 1;
 
         -- Шаг сетки для 3 км: 3 / 111.0 ≈ 0.027 градуса
         DECLARE @GridStep FLOAT = 0.027; 
@@ -203,12 +208,12 @@ BEGIN
             fg.MicroRegionID,
             
             -- Календарные фичи
-            DATEPART(WEEKDAY, fg.VisitDate) - 1 AS day_of_week,  -- 0=Monday, 6=Sunday (при DATEFIRST 1)
-            CASE WHEN DATEPART(WEEKDAY, fg.VisitDate) IN (6, 7) THEN 1 ELSE 0 END AS is_weekend,
-            CASE WHEN DATEPART(WEEKDAY, fg.VisitDate) = 2 THEN 1 ELSE 0 END AS is_monday,
-            CASE WHEN DATEPART(WEEKDAY, fg.VisitDate) = 6 THEN 1 ELSE 0 END AS is_friday,
-            CASE WHEN DATEPART(WEEKDAY, fg.VisitDate) = 7 THEN 1 ELSE 0 END AS is_saturday,
-            CASE WHEN DATEPART(WEEKDAY, fg.VisitDate) = 1 THEN 1 ELSE 0 END AS is_sunday,
+            (DATEPART(WEEKDAY, fg.VisitDate) - 1) % 7 AS day_of_week,  -- 0=Monday, 6=Sunday (при DATEFIRST 1)
+            CASE WHEN (DATEPART(WEEKDAY, fg.VisitDate) - 1) % 7 IN (5, 6) THEN 1 ELSE 0 END AS is_weekend,
+            CASE WHEN (DATEPART(WEEKDAY, fg.VisitDate) - 1) % 7 = 0 THEN 1 ELSE 0 END AS is_monday,
+            CASE WHEN (DATEPART(WEEKDAY, fg.VisitDate) - 1) % 7 = 4 THEN 1 ELSE 0 END AS is_friday,
+            CASE WHEN (DATEPART(WEEKDAY, fg.VisitDate) - 1) % 7 = 5 THEN 1 ELSE 0 END AS is_saturday,
+            CASE WHEN (DATEPART(WEEKDAY, fg.VisitDate) - 1) % 7 = 6 THEN 1 ELSE 0 END AS is_sunday,
             
             -- Праздники России (фиксированные даты)
             CASE WHEN (MONTH(fg.VisitDate) = 1 AND DAY(fg.VisitDate) IN (1,2,3,4,5,6,7,8))
@@ -226,7 +231,7 @@ BEGIN
                       OR (MONTH(DATEADD(DAY, 1, fg.VisitDate)) = 5 AND DAY(DATEADD(DAY, 1, fg.VisitDate)) IN (1,9))
                       OR (MONTH(DATEADD(DAY, 1, fg.VisitDate)) = 6 AND DAY(DATEADD(DAY, 1, fg.VisitDate)) = 12)
                       OR (MONTH(DATEADD(DAY, 1, fg.VisitDate)) = 11 AND DAY(DATEADD(DAY, 1, fg.VisitDate)) = 4)
-                      OR DATEPART(WEEKDAY, DATEADD(DAY, 1, fg.VisitDate)) IN (6, 7)
+                      OR (DATEPART(WEEKDAY, DATEADD(DAY, 1, fg.VisitDate)) - 1) % 7 IN (5, 6)
                  THEN 1 ELSE 0 END AS is_pre_holiday,
             
             -- Постпраздничный день
@@ -236,7 +241,7 @@ BEGIN
                       OR (MONTH(DATEADD(DAY, -1, fg.VisitDate)) = 5 AND DAY(DATEADD(DAY, -1, fg.VisitDate)) IN (1,9))
                       OR (MONTH(DATEADD(DAY, -1, fg.VisitDate)) = 6 AND DAY(DATEADD(DAY, -1, fg.VisitDate)) = 12)
                       OR (MONTH(DATEADD(DAY, -1, fg.VisitDate)) = 11 AND DAY(DATEADD(DAY, -1, fg.VisitDate)) = 4)
-                      OR DATEPART(WEEKDAY, DATEADD(DAY, -1, fg.VisitDate)) IN (6, 7)
+                      OR (DATEPART(WEEKDAY, DATEADD(DAY, -1, fg.VisitDate)) - 1) % 7 IN (5, 6)
                  THEN 1 ELSE 0 END AS is_post_holiday,
             
             -- Дополнительные календарные фичи
@@ -246,8 +251,54 @@ BEGIN
             CASE WHEN DAY(fg.VisitDate) = 1 THEN 1 ELSE 0 END AS is_month_start,
             CASE WHEN DAY(EOMONTH(fg.VisitDate)) = DAY(fg.VisitDate) THEN 1 ELSE 0 END AS is_month_end,
             DAY(fg.VisitDate) AS day_of_month,
-            DATEPART(DAYOFYEAR, fg.VisitDate) AS day_of_year
+            DATEPART(DAYOFYEAR, fg.VisitDate) AS day_of_year,
             
+            -- Дни до ближайшего праздника (расчет через подзапрос)
+            ISNULL((
+                SELECT TOP 1 DATEDIFF(DAY, fg.VisitDate, h.HolidayDate)
+                FROM (
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 1) AS HolidayDate UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 2) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 3) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 4) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 5) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 6) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 7) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 2, 23) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 3, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 5, 1) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 5, 9) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 6, 12) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 11, 4) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 1) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 2) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 3) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 4) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 5) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 6) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 7) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 2, 23) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 3, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 5, 1) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 5, 9) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 6, 12) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 11, 4)
+                ) h
+                WHERE h.HolidayDate > fg.VisitDate
+                ORDER BY h.HolidayDate ASC
+            ), 365) AS days_to_holiday,
+            
+            -- Дни от последнего праздника (расчет через подзапрос)
+            ISNULL((
+                SELECT TOP 1 DATEDIFF(DAY, h.HolidayDate, fg.VisitDate)
+                FROM (
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 1) AS HolidayDate UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 2) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 3) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 4) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 5) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 6) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 7) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 2, 23) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 3, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 5, 1) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 5, 9) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 6, 12) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 11, 4) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 1) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 2) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 3) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 4) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 5) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 6) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 7) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 2, 23) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 3, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 5, 1) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 5, 9) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 6, 12) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 11, 4)
+                ) h
+                WHERE h.HolidayDate < fg.VisitDate
+                ORDER BY h.HolidayDate DESC
+            ), 365) AS days_from_holiday
+
         INTO #ResultBase
         FROM #FullGrid fg;
         
@@ -435,7 +486,8 @@ BEGIN
             rb.is_month_end,
             rb.day_of_month,
             rb.day_of_year,
-            
+            rb.days_to_holiday,
+            rb.days_from_holiday,
             -- Фичи истории заказов
             dsc.Days_Since_Last_Order_Category,
             dst.Days_Since_Last_Order_Total,
