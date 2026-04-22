@@ -909,16 +909,29 @@ def main():
             logger.error("После удаления NaN не осталось данных для обучения")
             return None
         
-        X_train = df_train_clean[feature_cols]
-        y_train = df_train_clean[target_col]
-        
         # Определение категориальных признаков
         categorical_features = []
-        for col in feature_cols:
-            if df_train[col].dtype == 'object' or df_train[col].dtype == 'bool':
+        for col in df_train_clean.columns:
+            if col == target_col or col.lower() in ['visitdate', 'date']:
+                continue
+            if df_train_clean[col].dtype == 'object' or df_train_clean[col].dtype == 'bool':
                 categorical_features.append(col)
         
         logger.info(f"Категориальные признаки: {categorical_features}")
+        
+        # Заполнение пропусков в категориальных признаках значением 'Unknown'
+        for col in categorical_features:
+            df_train_clean[col] = df_train_clean[col].fillna('Unknown')
+        
+        # Заполнение пропусков в числовых признаках нулем или медианой
+        numeric_features = [col for col in df_train_clean.columns if col not in [target_col] + categorical_features and col.lower() not in ['visitdate', 'date']]
+        for col in numeric_features:
+            if df_train_clean[col].isna().any():
+                if df_train_clean[col].dtype in ['float64', 'int64']:
+                    df_train_clean[col] = df_train_clean[col].fillna(0)
+        
+        X_train = df_train_clean[feature_cols]
+        y_train = df_train_clean[target_col]
         
         # Шаг 3: Обучение модели CatBoost
         logger.info("Обучение модели CatBoost...")
@@ -958,7 +971,17 @@ def main():
         logger.info("Выполнение прогнозирования...")
         
         # Подготовка тестовых данных (те же признаки)
-        X_test = df_test[feature_cols]
+        X_test = df_test[feature_cols].copy()
+        
+        # Заполнение пропусков в категориальных признаках значением 'Unknown'
+        for col in categorical_features:
+            if col in X_test.columns:
+                X_test[col] = X_test[col].fillna('Unknown')
+        
+        # Заполнение пропусков в числовых признаках нулем
+        for col in numeric_features:
+            if col in X_test.columns and X_test[col].isna().any():
+                X_test[col] = X_test[col].fillna(0)
         
         # Предсказание
         predictions = model.predict(X_test)
