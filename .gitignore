@@ -1,4 +1,1 @@
-```
-# Database
-*.sql
-```
+Nothing should be ignored based on the provided file changes. The only modified file is `generate_test_dataset.sql`, which is a source code file and should not be added to .gitignore.

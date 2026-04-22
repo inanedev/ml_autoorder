@@ -34,33 +34,31 @@ DateRange AS (
 
 -- ============================================================================
 -- 4. Агрегация продаж по дням и категориям (исторические данные)
--- Предполагается, что данные берутся из той же логики, что и в SNS_ML_Get_Raw_Data
+-- Логика полностью идентична SNS_ML_Get_Raw_Data.sql
 -- ============================================================================
 SalesHistory AS (
     SELECT 
-        s.FaceID,
-        s.CategoryID,
-        s.SaleDate,
-        SUM(s.Amount) AS TotalAmount,
-        COUNT(*) AS OrderCount
-    FROM (
-        -- Здесь должна быть логика из SNS_ML_Get_Raw_Data.sql
-        -- Для примера используем упрощенную структуру
+        CAST(o.orDate AS DATE) AS SaleDate,
+        o.mfID AS FaceID,
+        m.CategoryID,
+        SUM(ISNULL(oi.forsumroubles, 0)) AS TotalAmount,
+        COUNT(DISTINCT o.orID) AS OrderCount
+    FROM DS_Orders o 
+    INNER JOIN DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
+    INNER JOIN (
+        -- Справочник SKU -> Категория (как в SNS_ML_Get_Raw_Data)
         SELECT 
-            tf.fid AS FaceID,
-            mc.id AS CategoryID,
-            CAST(ss.date AS DATE) AS SaleDate,
-            ss.summa AS Amount
-        FROM sales_summary ss
-        JOIN trade_points tp ON ss.point_id = tp.id
-        JOIN ds_faces tf ON tp.face_id = tf.fid
-        JOIN product_categories pc ON ss.category_id = pc.id
-        JOIN micro_categories mc ON pc.micro_cat_id = mc.id
-        WHERE ss.date >= DATEADD(DAY, -60, @Today) -- 60 дней истории для расчетов
-          AND tf.ftype = 1 
-          AND tf.factiveflag = 1
-    ) s
-    GROUP BY s.FaceID, s.CategoryID, s.SaleDate
+            CAST(i.iid AS INT) as iid, 
+            CAST(i.itID AS INT) AS CategoryID
+        FROM DS_ITEMS i 
+        WHERE i.activeFlag = 1 AND i.itID IS NOT NULL
+    ) m ON CAST(oi.iID AS INT) = m.iid 
+    INNER JOIN ds_faces f ON o.mfID = f.fid
+    WHERE o.orType = 1 
+      AND o.orDate >= DATEADD(DAY, -60, @Today) -- 60 дней истории для расчетов
+      AND f.ftype = 1 
+      AND f.factiveflag = 1
+    GROUP BY CAST(o.orDate AS DATE), o.mfID, m.CategoryID
 ),
 
 -- ============================================================================
