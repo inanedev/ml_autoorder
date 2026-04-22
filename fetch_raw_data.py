@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import numpy as np
 from catboost import CatBoostRegressor
 import shutil
+from sklearn.metrics import mean_absolute_error
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
@@ -1013,6 +1014,46 @@ def main():
         logger.info(f"  Макс: {predictions.max():.2f}")
         logger.info(f"  Среднее: {predictions.mean():.2f}")
         
+        # Расчет Prediction_Confidence на основе исторической точности модели
+        logger.info("Расчет метрик уверенности предсказаний...")
+        
+        # Расчет MAE на тренировочных данных для оценки точности
+        train_predictions = model.predict(X_train)
+        mae_train = mean_absolute_error(y_train, train_predictions)
+        rmse_train = np.sqrt(np.mean((y_train - train_predictions) ** 2))
+        
+        # Расчет confidence как обратной величины от относительной ошибки
+        # Confidence будет в диапазоне [0, 1], где 1 - максимальная уверенность
+        mean_actual = y_train.mean()
+        relative_error = mae_train / mean_actual if mean_actual > 0 else 1
+        
+        # Базовая уверенность модели (чем меньше ошибка, тем выше уверенность)
+        base_confidence = max(0, min(1, 1 - relative_error))
+        
+        logger.info(f"  MAE на тренировочных данных: {mae_train:.2f}")
+        logger.info(f"  RMSE на тренировочных данных: {rmse_train:.2f}")
+        logger.info(f"  Базовая уверенность модели: {base_confidence:.3f}")
+        
+        # Для каждого предсказания рассчитываем индивидуальную уверенность
+        # на основе расстояния от среднего значения предсказаний
+        pred_std = predictions.std()
+        pred_mean = predictions.mean()
+        
+        # Confidence уменьшается для выбросов (далеких от среднего)
+        if pred_std > 0:
+            z_scores = np.abs((predictions - pred_mean) / pred_std)
+            # Преобразуем z-score в confidence (чем больше отклонение, тем меньше уверенность)
+            individual_confidence = np.exp(-0.5 * (z_scores ** 2))
+        else:
+            individual_confidence = np.ones(len(predictions))
+        
+        # Итоговая уверенность = базовая уверенность * индивидуальная уверенность
+        df_test['Prediction_Confidence'] = base_confidence * individual_confidence
+        
+        logger.info(f"  Min Confidence: {df_test['Prediction_Confidence'].min():.3f}")
+        logger.info(f"  Max Confidence: {df_test['Prediction_Confidence'].max():.3f}")
+        logger.info(f"  Mean Confidence: {df_test['Prediction_Confidence'].mean():.3f}")
+        
         # Шаг 6: Выгрузка результатов в таблицу SNS_ML_Predictions
         logger.info("Загрузка результатов в таблицу SNS_ML_Predictions...")
         
@@ -1027,7 +1068,7 @@ def main():
             'Days_Since_Last_Order_Category', 'Days_Since_Last_Order_Total', 'Average_Interval_Category',
             'Prev_Order_Amount_Category', 'SMA_3_Category', 'SMA_7_Category', 'SMA_30_Category',
             'Momentum_Category', 'StdDev_Category',
-            'Predicted_Category_Sum'
+            'Predicted_Category_Sum', 'Prediction_Confidence'
         ]
         
         # Фильтрация только существующих колонок
@@ -1037,28 +1078,34 @@ def main():
         # Добавление служебных полей
         df_to_insert['CreatedAt'] = datetime.now()
         df_to_insert['ModelVersion'] = 'catboost_v1'
-        df_to_insert['Prediction_Confidence'] = None  # Можно добавить расчет уверенности
         
         # Вставка данных в базу
         conn = get_connection()
         cursor = conn.cursor()
         
+        # Включаем режим быстрой пакетной вставки для pyodbc
+        cursor.fast_executemany = True
+        
         # Формирование SQL запроса для вставки
         insert_query = f"""
         INSERT INTO dbo.SNS_ML_Predictions (
-            {', '.join(available_columns)}, CreatedAt, ModelVersion, Prediction_Confidence
+            {', '.join(available_columns)}, CreatedAt, ModelVersion
         ) VALUES (
-            {', '.join(['?' for _ in available_columns])}, ?, ?, ?
+            {', '.join(['?' for _ in available_columns])}, ?, ?
         )
         """
         
         logger.info(f"Вставка {len(df_to_insert)} записей в SNS_ML_Predictions...")
         
-        # Пакетная вставка
+        # Пакетная вставка - подготовка всех данных
+        all_values = []
         for idx, row in df_to_insert.iterrows():
             values = [row[col] if pd.notna(row[col]) else None for col in available_columns]
-            values.extend([row['CreatedAt'], row['ModelVersion'], row['Prediction_Confidence']])
-            cursor.execute(insert_query, values)
+            values.extend([row['CreatedAt'], row['ModelVersion']])
+            all_values.append(values)
+        
+        # Единая пакетная вставка всех записей
+        cursor.executemany(insert_query, all_values)
         
         conn.commit()
         conn.close()
