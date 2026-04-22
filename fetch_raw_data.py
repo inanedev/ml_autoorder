@@ -6,6 +6,8 @@ import logging
 import os
 from dotenv import load_dotenv
 import numpy as np
+from catboost import CatBoostRegressor
+import shutil
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
@@ -799,23 +801,35 @@ def fetch_raw_data(start_date: Union[str, datetime], end_date: Union[str, dateti
 def main():
     """
     Основная функция для демонстрации использования модуля.
-    Загружает данные за последние 30 дней и выводит статистику.
+    Загружает данные за последние 30 дней, обучает модель CatBoost,
+    прогнозирует суммы для тестовых данных и выкладывает результат в SNS_ML_Predictions.
     """
     import argparse
     
+    # Проверка свободного места перед установкой библиотек
+    def check_disk_space(min_gb=5):
+        """Проверяет свободное место на диске"""
+        total, used, free = shutil.disk_usage('/')
+        free_gb = free / (1024 ** 3)
+        logger.info(f"Свободно места на диске: {free_gb:.2f} GB")
+        if free_gb < min_gb:
+            logger.warning(f"Недостаточно свободного места (требуется минимум {min_gb} GB)")
+            return False
+        return True
+    
     # Парсинг аргументов командной строки
     parser = argparse.ArgumentParser(
-        description='Выгрузка сырых данных из базы данных optimum_lipetsk'
+        description='Выгрузка сырых данных из базы данных optimum_lipetsk, обучение модели и прогнозирование'
     )
     parser.add_argument(
         '--start-date', 
         type=str, 
-        help='Начальная дата в формате YYYY-MM-DD (по умолчанию: 30 дней назад)'
+        help='Начальная дата в формате YYYY-MM-DD (по умолчанию: 365 дней назад)'
     )
     parser.add_argument(
         '--end-date', 
         type=str, 
-        help='Конечная дата в формате YYYY-MM-DD (по умолчанию: сегодня)'
+        help='Конечная дата в формате YYYY-MM-DD (по умолчанию: вчера)'
     )
     parser.add_argument(
         '--output', 
@@ -828,19 +842,9 @@ def main():
         help='Включить подробный режим логгирования'
     )
     parser.add_argument(
-        '--add-features', 
-        action='store_true', 
-        help='Добавить календарные фичи для ML модели'
-    )
-    parser.add_argument(
-        '--add-history-features', 
-        action='store_true', 
-        help='Добавить фичи истории заказов (Days_Since_Last_Order_Category, Days_Since_Last_Order_Total, Average_Interval_Category)'
-    )
-    parser.add_argument(
-        '--add-sales-features', 
-        action='store_true', 
-        help='Добавить фичи продаж (Prev_Order_Amount_Category, SMA_3/7/30_Category, Momentum_Category, StdDev_Category)'
+        '--skip-install-check',
+        action='store_true',
+        help='Пропустить проверку свободного места перед установкой библиотек'
     )
     
     args = parser.parse_args()
@@ -849,35 +853,182 @@ def main():
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
     
-    # Определение дат
-    end_date = datetime.strptime(args.end_date, '%Y-%m-%d').date() if args.end_date else datetime.now().date()
-    start_date = datetime.strptime(args.start_date, '%Y-%m-%d').date() if args.start_date else end_date - timedelta(weeks=52)
+    # Проверка свободного места (если не пропущено)
+    if not args.skip_install_check:
+        if not check_disk_space(min_gb=5):
+            logger.error("Недостаточно свободного места для продолжения работы")
+            return None
     
-    logger.info(f"Загрузка данных с {start_date.strftime('%Y-%m-%d')} по {end_date.strftime('%Y-%m-%d')}...")
+    # Определение дат для обучающей выборки
+    end_date = datetime.strptime(args.end_date, '%Y-%m-%d').date() if args.end_date else (datetime.now().date() - timedelta(days=1))
+    start_date = datetime.strptime(args.start_date, '%Y-%m-%d').date() if args.start_date else end_date - timedelta(days=365)
+    
+    # Сегодняшняя дата для тестовых данных
+    today_date = datetime.now().date()
+    
+    logger.info(f"Загрузка обучающих данных с {start_date.strftime('%Y-%m-%d')} по {end_date.strftime('%Y-%m-%d')}...")
     
     try:
-        df = fetch_raw_data(start_date, end_date, add_features=args.add_features, 
-                           add_history_features=args.add_history_features, 
-                           add_sales_features_flag=args.add_sales_features)
+        # Шаг 1: Загрузка обучающих данных со всеми фичами
+        logger.info("Загрузка данных для обучения модели...")
+        df_train = fetch_raw_data(
+            start_date, end_date, 
+            add_features=True, 
+            add_history_features=True, 
+            add_sales_features_flag=True
+        )
         
-        if df is not None and len(df) > 0:
-            # Вывод статистики
-            logger.info("\n=== Статистика данных ===")
-            logger.info(f"Всего записей: {len(df)}")
-            logger.info(f"\nПервые 5 строк данных:\n{df.head()}")
-            logger.info(f"\nИнформация о типах данных:")
-            logger.info(f"Колонки: {list(df.columns)}")
-            logger.info(f"\nСтатистика числовых колонок:\n{df.describe()}")
-            
-            # Сохранение в файл если указан путь
-            if args.output:
-                df.to_csv(args.output, index=False)
-                logger.info(f"\nДанные сохранены в файл: {args.output}")
-            
-            return df
-        else:
-            logger.warning("Данные не получены или пустой результат")
+        if df_train is None or len(df_train) == 0:
+            logger.error("Не удалось загрузить данные для обучения модели")
             return None
+        
+        logger.info(f"Загружено {len(df_train)} записей для обучения")
+        
+        # Шаг 2: Подготовка данных для обучения CatBoost
+        # Определение целевой переменной и признаков
+        target_col = 'SumRoubles'
+        
+        # Колонки которые не являются признаками
+        exclude_cols = [target_col, 'VisitDate', 'date', 'Date', 'DATE']
+        
+        # Определение колонок-признаков
+        feature_cols = [col for col in df_train.columns if col not in exclude_cols]
+        
+        logger.info(f"Используется {len(feature_cols)} признаков для обучения")
+        logger.info(f"Признаки: {feature_cols}")
+        
+        # Проверка наличия целевой переменной
+        if target_col not in df_train.columns:
+            logger.error(f"Целевая переменная '{target_col}' не найдена в данных")
+            return None
+        
+        # Удаление строк с NaN в целевой переменной
+        df_train_clean = df_train.dropna(subset=[target_col])
+        
+        if len(df_train_clean) == 0:
+            logger.error("После удаления NaN не осталось данных для обучения")
+            return None
+        
+        X_train = df_train_clean[feature_cols]
+        y_train = df_train_clean[target_col]
+        
+        # Определение категориальных признаков
+        categorical_features = []
+        for col in feature_cols:
+            if df_train[col].dtype == 'object' or df_train[col].dtype == 'bool':
+                categorical_features.append(col)
+        
+        logger.info(f"Категориальные признаки: {categorical_features}")
+        
+        # Шаг 3: Обучение модели CatBoost
+        logger.info("Обучение модели CatBoost...")
+        
+        model = CatBoostRegressor(
+            iterations=1000,
+            depth=6,
+            learning_rate=0.1,
+            loss_function='RMSE',
+            verbose=100,
+            cat_features=categorical_features if categorical_features else None,
+            random_seed=42
+        )
+        
+        model.fit(X_train, y_train)
+        
+        logger.info("Модель успешно обучена!")
+        
+        # Шаг 4: Загрузка тестовых данных с сегодняшней датой
+        logger.info(f"Загрузка тестовых данных для даты {today_date.strftime('%Y-%m-%d')}...")
+        
+        test_query = """
+        EXEC dbo.SNS_ML_Get_Test_Data @TargetDate = ?
+        """
+        
+        conn = get_connection()
+        df_test = pd.read_sql(test_query, conn, params=[today_date.strftime('%Y-%m-%d')])
+        conn.close()
+        
+        if df_test is None or len(df_test) == 0:
+            logger.error("Не удалось загрузить тестовые данные")
+            return None
+        
+        logger.info(f"Загружено {len(df_test)} записей для прогнозирования")
+        
+        # Шаг 5: Прогнозирование для тестовых данных
+        logger.info("Выполнение прогнозирования...")
+        
+        # Подготовка тестовых данных (те же признаки)
+        X_test = df_test[feature_cols]
+        
+        # Предсказание
+        predictions = model.predict(X_test)
+        
+        # Добавление предсказаний в DataFrame
+        df_test['Predicted_Category_Sum'] = predictions
+        
+        logger.info(f"Прогнозы выполнены. Статистика предсказаний:")
+        logger.info(f"  Мин: {predictions.min():.2f}")
+        logger.info(f"  Макс: {predictions.max():.2f}")
+        logger.info(f"  Среднее: {predictions.mean():.2f}")
+        
+        # Шаг 6: Выгрузка результатов в таблицу SNS_ML_Predictions
+        logger.info("Загрузка результатов в таблицу SNS_ML_Predictions...")
+        
+        # Подготовка данных для вставки
+        columns_to_insert = [
+            'VisitDate', 'PointID', 'CategoryID', 'BranchID', 'PointClass', 'PointType',
+            'Lat', 'Lon', 'MicroRegionID',
+            'day_of_week', 'is_weekend', 'is_monday', 'is_friday', 'is_saturday', 'is_sunday',
+            'is_holiday', 'is_pre_holiday', 'is_post_holiday',
+            'month', 'quarter', 'week_of_year', 'is_month_start', 'is_month_end',
+            'day_of_month', 'day_of_year', 'days_to_holiday', 'days_from_holiday',
+            'Days_Since_Last_Order_Category', 'Days_Since_Last_Order_Total', 'Average_Interval_Category',
+            'Prev_Order_Amount_Category', 'SMA_3_Category', 'SMA_7_Category', 'SMA_30_Category',
+            'Momentum_Category', 'StdDev_Category',
+            'Predicted_Category_Sum'
+        ]
+        
+        # Фильтрация только существующих колонок
+        available_columns = [col for col in columns_to_insert if col in df_test.columns]
+        df_to_insert = df_test[available_columns].copy()
+        
+        # Добавление служебных полей
+        df_to_insert['CreatedAt'] = datetime.now()
+        df_to_insert['ModelVersion'] = 'catboost_v1'
+        df_to_insert['Prediction_Confidence'] = None  # Можно добавить расчет уверенности
+        
+        # Вставка данных в базу
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Формирование SQL запроса для вставки
+        insert_query = f"""
+        INSERT INTO dbo.SNS_ML_Predictions (
+            {', '.join(available_columns)}, CreatedAt, ModelVersion, Prediction_Confidence
+        ) VALUES (
+            {', '.join(['?' for _ in available_columns])}, ?, ?, ?
+        )
+        """
+        
+        logger.info(f"Вставка {len(df_to_insert)} записей в SNS_ML_Predictions...")
+        
+        # Пакетная вставка
+        for idx, row in df_to_insert.iterrows():
+            values = [row[col] if pd.notna(row[col]) else None for col in available_columns]
+            values.extend([row['CreatedAt'], row['ModelVersion'], row['Prediction_Confidence']])
+            cursor.execute(insert_query, values)
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Успешно загружено {len(df_to_insert)} прогнозов в таблицу SNS_ML_Predictions")
+        
+        # Сохранение в файл если указан путь
+        if args.output:
+            df_test.to_csv(args.output, index=False)
+            logger.info(f"Результаты сохранены в файл: {args.output}")
+        
+        return df_test
         
     except Exception as e:
         logger.error(f"Критическая ошибка выполнения: {e}")
