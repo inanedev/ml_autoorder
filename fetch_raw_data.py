@@ -933,6 +933,9 @@ def main():
                 if df_train_clean[col].dtype in ['float64', 'int64']:
                     df_train_clean[col] = df_train_clean[col].fillna(0)
         
+        # Преобразование target_col к числовому типу для предотвращения ошибок с decimal.Decimal
+        df_train_clean[target_col] = pd.to_numeric(df_train_clean[target_col], errors='coerce')
+        
         X_train = df_train_clean[feature_cols]
         y_train = df_train_clean[target_col]
         
