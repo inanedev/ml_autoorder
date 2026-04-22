@@ -41,7 +41,7 @@ SalesHistory AS (
         CAST(o.orDate AS DATE) AS SaleDate,
         o.mfID AS FaceID,
         m.CategoryID,
-        SUM(ISNULL(oi.forsumroubles, 0)) AS TotalAmount,
+        SUM(ISNULL(oi.SumRoubles, 0)) AS TotalAmount,
         COUNT(DISTINCT o.orID) AS OrderCount
     FROM DS_Orders o 
     INNER JOIN DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
