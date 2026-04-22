@@ -973,13 +973,21 @@ def main():
         logger.info("Выполнение прогнозирования...")
         
         # Подготовка тестовых данных (те же признаки)
-        # Фильтрация feature_cols только по существующим колонкам в df_test
-        available_feature_cols = [col for col in feature_cols if col in df_test.columns]
-        missing_features = set(feature_cols) - set(available_feature_cols)
+        # Добавление отсутствующих признаков со значением 0 для совместимости с моделью
+        missing_features = set(feature_cols) - set(df_test.columns)
         if missing_features:
             logger.warning(f"Отсутствуют следующие признаки в тестовых данных: {missing_features}")
+            logger.info(f"Добавление {len(missing_features)} отсутствующих признаков со значением 0")
+            for col in missing_features:
+                df_test[col] = 0
         
-        X_test = df_test[available_feature_cols].copy()
+        # Проверка наличия всех признаков
+        available_feature_cols = [col for col in feature_cols if col in df_test.columns]
+        if len(available_feature_cols) != len(feature_cols):
+            logger.error(f"Не удалось добавить все признаки. Ожидается {len(feature_cols)}, доступно {len(available_feature_cols)}")
+            raise ValueError("Несоответствие признаков между обучением и прогнозированием")
+        
+        X_test = df_test[feature_cols].copy()
         
         # Заполнение пропусков в категориальных признаках значением 'Unknown'
         for col in categorical_features:
