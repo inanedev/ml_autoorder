@@ -926,6 +926,8 @@ def main():
         # Заполнение пропусков в числовых признаках нулем или медианой
         numeric_features = [col for col in df_train_clean.columns if col not in [target_col] + categorical_features and col.lower() not in ['visitdate', 'date']]
         for col in numeric_features:
+            # Принудительное преобразование к числовому типу, заменяя нечисловые значения на NaN
+            df_train_clean[col] = pd.to_numeric(df_train_clean[col], errors='coerce')
             if df_train_clean[col].isna().any():
                 if df_train_clean[col].dtype in ['float64', 'int64']:
                     df_train_clean[col] = df_train_clean[col].fillna(0)
@@ -978,10 +980,13 @@ def main():
             if col in X_test.columns:
                 X_test[col] = X_test[col].fillna('Unknown')
         
-        # Заполнение пропусков в числовых признаках нулем
+        # Заполнение пропусков в числовых признаках нулем - с предварительным преобразованием к numeric
         for col in numeric_features:
-            if col in X_test.columns and X_test[col].isna().any():
-                X_test[col] = X_test[col].fillna(0)
+            if col in X_test.columns:
+                # Принудительное преобразование к числовому типу, заменяя нечисловые значения на NaN
+                X_test[col] = pd.to_numeric(X_test[col], errors='coerce')
+                if X_test[col].isna().any():
+                    X_test[col] = X_test[col].fillna(0)
         
         # Предсказание
         predictions = model.predict(X_test)
