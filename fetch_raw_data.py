@@ -206,7 +206,7 @@ def main():
     
     # Определение дат
     end_date = datetime.strptime(args.end_date, '%Y-%m-%d').date() if args.end_date else datetime.now().date()
-    start_date = datetime.strptime(args.start_date, '%Y-%m-%d').date() if args.start_date else end_date - timedelta(days=30)
+    start_date = datetime.strptime(args.start_date, '%Y-%m-%d').date() if args.start_date else end_date - timedelta(weeks=52)
     
     logger.info(f"Загрузка данных с {start_date.strftime('%Y-%m-%d')} по {end_date.strftime('%Y-%m-%d')}...")
     
