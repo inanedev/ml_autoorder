@@ -121,7 +121,6 @@ python fetch_raw_data.py --verbose
 | `Lat` | FLOAT | Широта точки продаж |
 | `Lon` | FLOAT | Долгота точки продаж |
 | `MicroRegionID` | VARCHAR | Идентификатор микрорегиона (сетка 3x3 км) |
-| `OrderCountDocs` | INT | Количество документов за день |
 | `SumRoubles` | FLOAT | Сумма продаж в рублях за день |
 
 ## Логика работы
@@ -210,7 +209,6 @@ df = fetch_raw_data('2024-01-01', '2024-01-31')
 # Анализ по микрорегионам
 region_stats = df.groupby('MicroRegionID').agg({
     'SumRoubles': 'sum',
-    'OrderCountDocs': 'sum',
     'PointID': 'nunique'
 }).reset_index()
 

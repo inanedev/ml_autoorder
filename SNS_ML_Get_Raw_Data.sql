@@ -23,7 +23,6 @@ GO
  *   Lat             - Широта точки продаж
  *   Lon             - Долгота точки продаж
  *   MicroRegionID   - Идентификатор микрорегиона (сетка 3x3 км)
- *   OrderCountDocs  - Количество документов за день
  *   SumRoubles      - Сумма продаж в рублях за день
  * 
  * Логика работы:
@@ -123,7 +122,6 @@ BEGIN
             pf.Lat,
             pf.Lon,
             pf.MicroRegionID,  -- Добавлен микрорегион 3x3 км
-            COUNT(DISTINCT o.orID) AS OrderCountDocs, -- Кол-во документов за день
             SUM(ISNULL(oi.SumRoubles, 0)) AS SumRoubles -- Сумма за день
         FROM DS_Orders o 
         INNER JOIN DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
