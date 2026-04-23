@@ -391,6 +391,11 @@ BEGIN
         FROM #DaysUntilNextVisit dunv
         WHERE dunv.PlannedVisitDays IS NOT NULL AND dunv.PlannedVisitDays != '';
         
+        -- Если Days_Until_Next_Visit не удалось определить, устанавливаем значение по умолчанию = 7
+        UPDATE #DaysUntilNextVisit
+        SET Days_Until_Next_Visit = 7
+        WHERE Days_Until_Next_Visit IS NULL;
+        
         CREATE CLUSTERED INDEX IX_DUNV_DatePointCat ON #DaysUntilNextVisit (VisitDate, PointID, CategoryID);
 
         -- 10a. Старый расчет Days_Until_Next_Order_Category (переименован для обратной совместимости)
