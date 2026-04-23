@@ -1,1 +1,1 @@
-Nothing should be ignored based on the provided file changes. The only modified file is `SNS_ML_Get_Test_Data.sql`, which is a SQL source file and should not be added to .gitignore.
+Nothing should be ignored based on the provided file changes. The only modified file is `SNS_ML_Get_Test_Data.sql`, which is a SQL source file and should not be ignored.
