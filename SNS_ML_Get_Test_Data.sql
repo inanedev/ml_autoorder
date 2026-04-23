@@ -377,10 +377,13 @@ BEGIN
                     ELSE 7 - (dunv.CurrentDayOfWeek - PlannedDay)
                 END AS DaysUntil
             FROM (
-                -- Разбиваем строку "1,3,5" на отдельные значения
-                SELECT TRY_CAST(value AS INT) AS PlannedDay
-                FROM STRING_SPLIT(dunv.PlannedVisitDays, ',')
-                WHERE TRY_CAST(value AS INT) BETWEEN 1 AND 7
+                -- Разбиваем строку "1,3,5" на отдельные значения через XML (совместимо с SQL Server 2012)
+                SELECT TRY_CAST(x.value('.', 'VARCHAR(10)') AS INT) AS PlannedDay
+                FROM (
+                    SELECT CAST('<n>' + REPLACE(dunv.PlannedVisitDays, ',', '</n><n>') + '</n>' AS XML) AS XmlData
+                ) AS SplitXml
+                CROSS APPLY XmlData.nodes('/n') AS SplitValues(x)
+                WHERE TRY_CAST(x.value('.', 'VARCHAR(10)') AS INT) BETWEEN 1 AND 7
             ) PlannedDays
             WHERE PlannedDay IS NOT NULL
             ORDER BY DaysUntil ASC
