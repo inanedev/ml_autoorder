@@ -373,7 +373,7 @@ BEGIN
         SET Days_Until_Next_Visit = (
             SELECT TOP 1 
                 CASE 
-                    WHEN PlannedDay >= dunv.CurrentDayOfWeek THEN PlannedDay - dunv.CurrentDayOfWeek
+                    WHEN PlannedDay > dunv.CurrentDayOfWeek THEN PlannedDay - dunv.CurrentDayOfWeek
                     ELSE 7 - (dunv.CurrentDayOfWeek - PlannedDay)
                 END AS DaysUntil
             FROM (
