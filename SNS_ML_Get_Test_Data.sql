@@ -48,6 +48,9 @@ GO
  *   Days_Since_Last_Order_Category - Дней назад точка брала эту категорию
  *   Days_Since_Last_Order_Total    - Дней назад был любой заказ от точки
  *   Average_Interval_Category      - Средний интервал между закупками категории
+ *   Days_Until_Next_Visit          - Дней до следующего планового визита (на основе атрибута 644)
+ *   Days_Until_Next_Order_Category - Дней до следующего заказа этой категории (исторический)
+ *   Days_Until_Next_Order_Total    - Дней до следующего любого заказа от точки (исторический)
  *   
  *   === Фичи продаж ===
  *   Prev_Order_Amount_Category    - Сумма предыдущего заказа по категории
@@ -106,7 +109,7 @@ BEGIN
         
         CREATE CLUSTERED INDEX IX_ItemMap_iid ON #ItemMap (iid);
 
-        -- 2. Признаки активных точек + Расчет Микрорегиона (3x3 км)
+        -- 2. Признаки активных точек + Расчет Микрорегиона (3x3 км) + Атрибут 644 (плановые дни визитов)
         IF OBJECT_ID('tempdb..#PointFeatures') IS NOT NULL DROP TABLE #PointFeatures;
         SELECT 
             f.fid AS PointID, 
@@ -119,6 +122,9 @@ BEGIN
             -- Атрибуты
             ISNULL(MAX(CASE WHEN fa.attrid = 602 THEN fa.attrtext END), 'Unknown') AS PointClass,
             ISNULL(MAX(CASE WHEN fa.attrid = 555 THEN fa.attrtext END), 'Unknown') AS PointType,
+            
+            -- Атрибут 644 - плановые дни визитов (формат "1,3,5" где 1=понедельник, 7=воскресенье)
+            ISNULL(MAX(CASE WHEN fa.attrid = 644 THEN fa.attrtext END), '') AS PlannedVisitDays,
             
             -- Расчет MicroRegionID (Сетка 3x3 км)
             CAST(
@@ -155,7 +161,8 @@ BEGIN
             pf.PointType,
             pf.Lat,
             pf.Lon,
-            pf.MicroRegionID
+            pf.MicroRegionID,
+            pf.PlannedVisitDays
         INTO #FullGrid
         FROM #PointFeatures pf
         CROSS JOIN #Categories c;
@@ -206,6 +213,7 @@ BEGIN
             fg.Lat,
             fg.Lon,
             fg.MicroRegionID,
+            fg.PlannedVisitDays,
             
             -- Календарные фичи
             (DATEPART(WEEKDAY, fg.VisitDate) - 1) % 7 AS day_of_week,  -- 0=Monday, 6=Sunday (при DATEFIRST 1)
@@ -345,7 +353,85 @@ BEGIN
         
         CREATE CLUSTERED INDEX IX_DST_DatePointCat ON #DaysSinceTotal (VisitDate, PointID, CategoryID);
 
-        -- 10. Расчет Average_Interval_Category (средний интервал между заказами категории)
+        -- 10. Расчет Days_Until_Next_Visit (на основе атрибута 644 - плановые дни визитов)
+        -- Логика: определяем день недели TargetDate, находим ближайший плановый день из атрибута 644
+        IF OBJECT_ID('tempdb..#DaysUntilNextVisit') IS NOT NULL DROP TABLE #DaysUntilNextVisit;
+        SELECT 
+            rb.VisitDate,
+            rb.PointID,
+            rb.CategoryID,
+            rb.PlannedVisitDays,
+            DATEPART(WEEKDAY, rb.VisitDate) AS CurrentDayOfWeek
+        INTO #DaysUntilNextVisit
+        FROM #ResultBase rb;
+        
+        -- Добавляем колонку для результата
+        ALTER TABLE #DaysUntilNextVisit ADD Days_Until_Next_Visit INT NULL;
+        
+        -- Обновляем значения для точек с заполненным атрибутом 644
+        UPDATE dunv
+        SET Days_Until_Next_Visit = (
+            SELECT TOP 1 
+                CASE 
+                    WHEN PlannedDay >= dunv.CurrentDayOfWeek THEN PlannedDay - dunv.CurrentDayOfWeek
+                    ELSE 7 - (dunv.CurrentDayOfWeek - PlannedDay)
+                END AS DaysUntil
+            FROM (
+                -- Разбиваем строку "1,3,5" на отдельные значения
+                SELECT TRY_CAST(value AS INT) AS PlannedDay
+                FROM STRING_SPLIT(dunv.PlannedVisitDays, ',')
+                WHERE TRY_CAST(value AS INT) BETWEEN 1 AND 7
+            ) PlannedDays
+            WHERE PlannedDay IS NOT NULL
+            ORDER BY DaysUntil ASC
+        )
+        FROM #DaysUntilNextVisit dunv
+        WHERE dunv.PlannedVisitDays IS NOT NULL AND dunv.PlannedVisitDays != '';
+        
+        CREATE CLUSTERED INDEX IX_DUNV_DatePointCat ON #DaysUntilNextVisit (VisitDate, PointID, CategoryID);
+
+        -- 10a. Старый расчет Days_Until_Next_Order_Category (переименован для обратной совместимости)
+        IF OBJECT_ID('tempdb..#DaysUntilCategory') IS NOT NULL DROP TABLE #DaysUntilCategory;
+        SELECT 
+            rb.VisitDate,
+            rb.PointID,
+            rb.CategoryID,
+            DATEDIFF(DAY, rb.VisitDate, MIN(sh.VisitDate)) AS Days_Until_Next_Order_Category
+        INTO #DaysUntilCategory
+        FROM #ResultBase rb
+        OUTER APPLY (
+            SELECT TOP 1 sh2.VisitDate
+            FROM #SalesHistory sh2
+            WHERE sh2.PointID = rb.PointID 
+              AND sh2.CategoryID = rb.CategoryID
+              AND sh2.VisitDate > rb.VisitDate
+            ORDER BY sh2.VisitDate ASC
+        ) sh
+        GROUP BY rb.VisitDate, rb.PointID, rb.CategoryID, sh.VisitDate;
+        
+        CREATE CLUSTERED INDEX IX_DUC_DatePointCat ON #DaysUntilCategory (VisitDate, PointID, CategoryID);
+
+        -- 11. Старый расчет Days_Until_Next_Order_Total (переименован для обратной совместимости)
+        IF OBJECT_ID('tempdb..#DaysUntilTotal') IS NOT NULL DROP TABLE #DaysUntilTotal;
+        SELECT 
+            rb.VisitDate,
+            rb.PointID,
+            rb.CategoryID,
+            DATEDIFF(DAY, rb.VisitDate, MIN(oh.VisitDate)) AS Days_Until_Next_Order_Total
+        INTO #DaysUntilTotal
+        FROM #ResultBase rb
+        OUTER APPLY (
+            SELECT TOP 1 oh2.VisitDate
+            FROM #OrderHistory oh2
+            WHERE oh2.PointID = rb.PointID
+              AND oh2.VisitDate > rb.VisitDate
+            ORDER BY oh2.VisitDate ASC
+        ) oh
+        GROUP BY rb.VisitDate, rb.PointID, rb.CategoryID, oh.VisitDate;
+        
+        CREATE CLUSTERED INDEX IX_DUT_DatePointCat ON #DaysUntilTotal (VisitDate, PointID, CategoryID);
+
+        -- 12. Расчет Average_Interval_Category (средний интервал между заказами категории)
         IF OBJECT_ID('tempdb..#AvgInterval') IS NOT NULL DROP TABLE #AvgInterval;
         WITH CategoryIntervals AS (
             SELECT 
@@ -492,6 +578,11 @@ BEGIN
             dsc.Days_Since_Last_Order_Category,
             dst.Days_Since_Last_Order_Total,
             ai.Average_Interval_Category,
+            -- Новый показатель: дни до следующего планового визита (на основе атрибута 644)
+            dunv.Days_Until_Next_Visit,
+            -- Старые показатели для обратной совместимости
+            duc.Days_Until_Next_Order_Category,
+            dut.Days_Until_Next_Order_Total,
             
             -- Фичи продаж
             sf.Prev_Order_Amount_Category,
@@ -510,6 +601,15 @@ BEGIN
                                       AND rb.CategoryID = dst.CategoryID
         LEFT JOIN #AvgInterval ai ON rb.PointID = ai.PointID 
                                   AND rb.CategoryID = ai.CategoryID
+        LEFT JOIN #DaysUntilNextVisit dunv ON rb.VisitDate = dunv.VisitDate 
+                                           AND rb.PointID = dunv.PointID 
+                                           AND rb.CategoryID = dunv.CategoryID
+        LEFT JOIN #DaysUntilCategory duc ON rb.VisitDate = duc.VisitDate 
+                                         AND rb.PointID = duc.PointID 
+                                         AND rb.CategoryID = duc.CategoryID
+        LEFT JOIN #DaysUntilTotal dut ON rb.VisitDate = dut.VisitDate 
+                                      AND rb.PointID = dut.PointID 
+                                      AND rb.CategoryID = dut.CategoryID
         LEFT JOIN #SalesFeatures sf ON rb.VisitDate = sf.VisitDate 
                                     AND rb.PointID = sf.PointID 
                                     AND rb.CategoryID = sf.CategoryID
@@ -525,6 +625,9 @@ BEGIN
         DROP TABLE #ResultBase;
         DROP TABLE #DaysSinceCategory;
         DROP TABLE #DaysSinceTotal;
+        DROP TABLE #DaysUntilNextVisit;
+        DROP TABLE #DaysUntilCategory;
+        DROP TABLE #DaysUntilTotal;
         DROP TABLE #AvgInterval;
         DROP TABLE #SalesFeatures;
         
@@ -551,6 +654,9 @@ BEGIN
         IF OBJECT_ID('tempdb..#ResultBase') IS NOT NULL DROP TABLE #ResultBase;
         IF OBJECT_ID('tempdb..#DaysSinceCategory') IS NOT NULL DROP TABLE #DaysSinceCategory;
         IF OBJECT_ID('tempdb..#DaysSinceTotal') IS NOT NULL DROP TABLE #DaysSinceTotal;
+        IF OBJECT_ID('tempdb..#DaysUntilNextVisit') IS NOT NULL DROP TABLE #DaysUntilNextVisit;
+        IF OBJECT_ID('tempdb..#DaysUntilCategory') IS NOT NULL DROP TABLE #DaysUntilCategory;
+        IF OBJECT_ID('tempdb..#DaysUntilTotal') IS NOT NULL DROP TABLE #DaysUntilTotal;
         IF OBJECT_ID('tempdb..#AvgInterval') IS NOT NULL DROP TABLE #AvgInterval;
         IF OBJECT_ID('tempdb..#SalesFeatures') IS NOT NULL DROP TABLE #SalesFeatures;
         
