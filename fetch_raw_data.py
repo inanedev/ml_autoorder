@@ -236,7 +236,7 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
     Добавляет фичи истории заказов для подготовки модели машинного обучения.
     
     Аргументы:
-        df: DataFrame с данными продаж
+        df: DataFrame с данными продаж (должен содержать историю за 6 месяцев)
         start_date: Начальная дата периода выгрузки (строка YYYY-MM-DD)
         end_date: Конечная дата периода выгрузки (строка YYYY-MM-DD)
         
@@ -247,7 +247,8 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
         - Average_Interval_Category: средний интервал между закупками категории
         
     Примечание:
-        Требуется подключение к БД для получения исторических данных
+        Все расчеты производятся только на основе предоставленного DataFrame.
+        Для корректного расчета рекомендуется передавать данные за 6 месяцев.
         Ожидает наличие колонок: 'date', 'outlet_id' (или 'OutletID'), 'category_id' (или 'CategoryID')
     """
     if df.empty:
@@ -289,138 +290,74 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
     # Преобразование даты
     df_result[date_col] = pd.to_datetime(df_result[date_col])
     
-    # Получение исторических данных из БД
-    conn = None
-    try:
-        logger.info("Загрузка исторических данных для расчета фичей заказов...")
+    # Инициализация колонок
+    df_result['Days_Since_Last_Order_Category'] = np.nan
+    df_result['Days_Since_Last_Order_Total'] = np.nan
+    df_result['Average_Interval_Category'] = np.nan
+    
+    # Расчет для каждой уникальной комбинации outlet + date
+    unique_outlets = df_result[outlet_col].unique()
+    
+    logger.info(f"Расчет фичей истории заказов для {len(unique_outlets)} точек продаж...")
+    
+    for outlet_id in unique_outlets:
+        # Фильтрация данных по точке
+        outlet_data = df_result[df_result[outlet_col] == outlet_id].copy()
         
-        # Запрос на получение всей истории заказов до start_date
-        historical_query = f"""
-        SELECT 
-            t.{date_col} as order_date,
-            t.{outlet_col} as outlet_id,
-            t.{category_col if category_col else 'NULL'} as category_id
-        FROM OPENQUERY(
-            OPTIMUM_LEPETSK, 
-            'SELECT TOP 1000000 
-                CAST(OrderDate AS DATE) as order_date,
-                OutletID,
-                CategoryID
-             FROM Sales.vw_ML_Raw_Data
-             WHERE OrderDate < '''{start_date}'''
-             ORDER BY OrderDate DESC'
-        ) t
-        """
+        if outlet_data.empty:
+            continue
         
-        # Если нет category_id в исходных данных, упрощаем запрос
-        if category_col is None:
-            historical_query = f"""
-            SELECT 
-                t.{date_col} as order_date,
-                t.{outlet_col} as outlet_id,
-                NULL as category_id
-            FROM OPENQUERY(
-                OPTIMUM_LEPETSK, 
-                'SELECT TOP 1000000 
-                    CAST(OrderDate AS DATE) as order_date,
-                    OutletID,
-                    NULL as CategoryID
-                 FROM Sales.vw_ML_Raw_Data
-                 WHERE OrderDate < '''{start_date}'''
-                 ORDER BY OrderDate DESC'
-            ) t
-            """
+        # Сортировка по дате
+        outlet_data = outlet_data.sort_values(date_col)
         
-        conn = get_connection()
-        df_history = pd.read_sql(historical_query, conn)
+        # Расчет Days_Since_Last_Order_Total для каждой даты
+        outlet_mask = df_result[outlet_col] == outlet_id
+        outlet_indices = df_result.loc[outlet_mask].index
         
-        if df_history.empty:
-            logger.warning("Исторические данные не найдены. Фичи истории заказов не добавлены.")
-            df_result['Days_Since_Last_Order_Category'] = np.nan
-            df_result['Days_Since_Last_Order_Total'] = np.nan
-            df_result['Average_Interval_Category'] = np.nan
-            return df_result
-        
-        # Преобразование даты в истории
-        df_history['order_date'] = pd.to_datetime(df_history['order_date'])
-        
-        # Инициализация колонок
-        df_result['Days_Since_Last_Order_Category'] = np.nan
-        df_result['Days_Since_Last_Order_Total'] = np.nan
-        df_result['Average_Interval_Category'] = np.nan
-        
-        # Расчет для каждой уникальной комбинации outlet + date
-        unique_outlets = df_result[outlet_col].unique()
-        
-        logger.info(f"Расчет фичей для {len(unique_outlets)} точек продаж...")
-        
-        for outlet_id in unique_outlets:
-            # Фильтрация истории по точке
-            outlet_history = df_history[df_history['outlet_id'] == outlet_id].copy()
+        for idx in outlet_indices:
+            current_date = df_result.loc[idx, date_col]
             
-            if outlet_history.empty:
-                continue
+            # Прошлые заказы этой точки (все записи до текущей даты)
+            past_orders = outlet_data[outlet_data[date_col] < current_date]
             
-            # Сортировка по дате
-            outlet_history = outlet_history.sort_values('order_date')
-            
-            # Расчет Days_Since_Last_Order_Total для каждой даты в df_result
-            outlet_mask = df_result[outlet_col] == outlet_id
-            outlet_dates = df_result.loc[outlet_mask, date_col]
-            
-            for idx in outlet_dates.index:
-                current_date = outlet_dates.loc[idx]
-                
+            if not past_orders.empty:
                 # Days_Since_Last_Order_Total
-                past_orders = outlet_history[outlet_history['order_date'] < current_date]
-                if not past_orders.empty:
-                    last_order_date = past_orders['order_date'].max()
-                    days_since = (current_date - last_order_date).days
-                    df_result.loc[idx, 'Days_Since_Last_Order_Total'] = days_since
+                last_order_date = past_orders[date_col].max()
+                days_since = (current_date - last_order_date).days
+                df_result.loc[idx, 'Days_Since_Last_Order_Total'] = days_since
                 
                 # Days_Since_Last_Order_Category (если есть category_id)
                 if category_col is not None:
                     current_category = df_result.loc[idx, category_col]
                     if pd.notna(current_category):
-                        category_history = outlet_history[
-                            (outlet_history['order_date'] < current_date) & 
-                            (outlet_history['category_id'] == current_category)
+                        category_history = past_orders[
+                            past_orders[category_col] == current_category
                         ]
                         if not category_history.empty:
-                            last_category_date = category_history['order_date'].max()
+                            last_category_date = category_history[date_col].max()
                             days_since_cat = (current_date - last_category_date).days
                             df_result.loc[idx, 'Days_Since_Last_Order_Category'] = days_since_cat
-            
-            # Расчет Average_Interval_Category (средний интервал между заказами категории)
-            if category_col is not None and not outlet_history[category_col].isna().all():
-                for category_id in outlet_history[category_col].dropna().unique():
-                    cat_history = outlet_history[
-                        outlet_history[category_col] == category_id
-                    ].sort_values('order_date')
+        
+        # Расчет Average_Interval_Category (средний интервал между заказами категории)
+        if category_col is not None:
+            for category_id in outlet_data[category_col].dropna().unique():
+                cat_data = outlet_data[
+                    outlet_data[category_col] == category_id
+                ].sort_values(date_col)
+                
+                if len(cat_data) > 1:
+                    # Расчет интервалов между заказами
+                    intervals = cat_data[date_col].diff().dt.days.dropna()
+                    avg_interval = intervals.mean() if len(intervals) > 0 else np.nan
                     
-                    if len(cat_history) > 1:
-                        # Расчет интервалов между заказами
-                        intervals = cat_history['order_date'].diff().dt.days.dropna()
-                        avg_interval = intervals.mean() if len(intervals) > 0 else np.nan
-                        
-                        # Присвоение среднего интервала всем записям этой категории в этой точке
-                        mask = (df_result[outlet_col] == outlet_id) & \
-                               (df_result[category_col] == category_id)
-                        df_result.loc[mask, 'Average_Interval_Category'] = avg_interval
-        
-        logger.info(f"Добавлены фичи истории заказов: {len(df_result.columns)} колонок всего")
-        
-        return df_result
-        
-    except Exception as e:
-        logger.error(f"Ошибка при расчете фичей истории заказов: {e}")
-        df_result['Days_Since_Last_Order_Category'] = np.nan
-        df_result['Days_Since_Last_Order_Total'] = np.nan
-        df_result['Average_Interval_Category'] = np.nan
-        return df_result
-    finally:
-        if conn:
-            conn.close()
+                    # Присвоение среднего интервала всем записям этой категории в этой точке
+                    mask = (df_result[outlet_col] == outlet_id) & \
+                           (df_result[category_col] == category_id)
+                    df_result.loc[mask, 'Average_Interval_Category'] = avg_interval
+    
+    logger.info(f"Добавлены фичи истории заказов: {len(df_result.columns)} колонок всего")
+    
+    return df_result
 
 
 def add_sales_features(df: pd.DataFrame, start_date: str, end_date: str) -> pd.DataFrame:
@@ -428,7 +365,7 @@ def add_sales_features(df: pd.DataFrame, start_date: str, end_date: str) -> pd.D
     Добавляет фичи продаж для подготовки модели машинного обучения.
     
     Аргументы:
-        df: DataFrame с данными продаж
+        df: DataFrame с данными продаж (должен содержать историю за 6 месяцев)
         start_date: Начальная дата периода выгрузки (строка YYYY-MM-DD)
         end_date: Конечная дата периода выгрузки (строка YYYY-MM-DD)
         
@@ -442,7 +379,8 @@ def add_sales_features(df: pd.DataFrame, start_date: str, end_date: str) -> pd.D
         - StdDev_Category: скользящее стандартное отклонение для категории (стабильность спроса)
         
     Примечание:
-        Требуется подключение к БД для получения исторических данных
+        Все расчеты производятся только на основе предоставленного DataFrame.
+        Для корректного расчета рекомендуется передавать данные за 6 месяцев.
         Ожидает наличие колонок: 'date', 'outlet_id', 'category_id', 'sales_amount' (или аналог)
     """
     if df.empty:
@@ -489,223 +427,139 @@ def add_sales_features(df: pd.DataFrame, start_date: str, end_date: str) -> pd.D
     # Создание копии DataFrame
     df_result = df.copy()
     
-    # Преобразование даты
+    # Преобразование даты и суммы
     df_result[date_col] = pd.to_datetime(df_result[date_col])
+    df_result[amount_col] = pd.to_numeric(df_result[amount_col], errors='coerce')
     
-    # Получение исторических данных из БД
-    conn = None
-    try:
-        logger.info("Загрузка исторических данных для расчета фичей продаж...")
-        
-        # Запрос на получение всей истории продаж до start_date
-        historical_query = f"""
-        SELECT 
-            t.{date_col} as order_date,
-            t.{outlet_col} as outlet_id,
-            t.{category_col if category_col else 'NULL'} as category_id,
-            t.{amount_col} as sales_amount
-        FROM OPENQUERY(
-            OPTIMUM_LEPETSK, 
-            'SELECT TOP 1000000 
-                CAST(OrderDate AS DATE) as order_date,
-                OutletID,
-                CategoryID,
-                SalesAmount
-             FROM Sales.vw_ML_Raw_Data
-             WHERE OrderDate < '''{start_date}'''
-             ORDER BY OrderDate DESC'
-        ) t
-        """
-        
-        # Если нет category_id в исходных данных, упрощаем запрос
-        if category_col is None:
-            historical_query = f"""
-            SELECT 
-                t.{date_col} as order_date,
-                t.{outlet_col} as outlet_id,
-                NULL as category_id,
-                t.{amount_col} as sales_amount
-            FROM OPENQUERY(
-                OPTIMUM_LEPETSK, 
-                'SELECT TOP 1000000 
-                    CAST(OrderDate AS DATE) as order_date,
-                    OutletID,
-                    NULL as CategoryID,
-                    SalesAmount
-                 FROM Sales.vw_ML_Raw_Data
-                 WHERE OrderDate < '''{start_date}'''
-                 ORDER BY OrderDate DESC'
-            ) t
-            """
-        
-        conn = get_connection()
-        df_history = pd.read_sql(historical_query, conn)
-        
-        if df_history.empty:
-            logger.warning("Исторические данные по продажам не найдены. Фичи продаж не добавлены.")
-            df_result['Prev_Order_Amount_Category'] = np.nan
-            df_result['SMA_3_Category'] = np.nan
-            df_result['SMA_7_Category'] = np.nan
-            df_result['SMA_30_Category'] = np.nan
-            df_result['Momentum_Category'] = np.nan
-            df_result['StdDev_Category'] = np.nan
-            return df_result
-        
-        # Преобразование даты в истории
-        df_history['order_date'] = pd.to_datetime(df_history['order_date'])
-        df_history['sales_amount'] = pd.to_numeric(df_history['sales_amount'], errors='coerce')
-        
-        # Инициализация колонок
-        df_result['Prev_Order_Amount_Category'] = np.nan
-        df_result['SMA_3_Category'] = np.nan
-        df_result['SMA_7_Category'] = np.nan
-        df_result['SMA_30_Category'] = np.nan
-        df_result['Momentum_Category'] = np.nan
-        df_result['StdDev_Category'] = np.nan
-        
-        # Расчет для каждой уникальной комбинации outlet + category
-        if category_col is not None:
-            unique_groups = df_result[[outlet_col, category_col]].drop_duplicates()
-            logger.info(f"Расчет фичей продаж для {len(unique_groups)} групп (точка x категория)...")
-            
-            for _, row in unique_groups.iterrows():
-                outlet_id = row[outlet_col]
-                category_id = row[category_col]
-                
-                if pd.isna(category_id):
-                    continue
-                
-                # Фильтрация истории по точке и категории
-                group_history = df_history[
-                    (df_history['outlet_id'] == outlet_id) & 
-                    (df_history['category_id'] == category_id)
-                ].sort_values('order_date')
-                
-                if group_history.empty:
-                    continue
-                
-                # Фильтрация данных для текущей группы в df_result
-                group_mask = (df_result[outlet_col] == outlet_id) & \
-                            (df_result[category_col] == category_id)
-                group_dates = df_result.loc[group_mask, date_col].sort_values()
-                
-                for idx in group_dates.index:
-                    current_date = group_dates.loc[idx]
-                    
-                    # Прошлые заказы для этой группы
-                    past_orders = group_history[group_history['order_date'] < current_date]
-                    
-                    if past_orders.empty:
-                        continue
-                    
-                    # 1. Сумма предыдущего заказа по категории
-                    last_order = past_orders[past_orders['order_date'] == past_orders['order_date'].max()]
-                    prev_amount = last_order['sales_amount'].sum()
-                    df_result.loc[idx, 'Prev_Order_Amount_Category'] = prev_amount
-                    
-                    # 2. SMA (Simple Moving Average) за 3, 7, 30 дней
-                    # SMA_3: среднее за последние 3 дня
-                    last_3_days = past_orders[
-                        past_orders['order_date'] >= (current_date - timedelta(days=3))
-                    ]
-                    if not last_3_days.empty:
-                        df_result.loc[idx, 'SMA_3_Category'] = last_3_days.groupby('order_date')['sales_amount'].sum().mean()
-                    
-                    # SMA_7: среднее за последние 7 дней
-                    last_7_days = past_orders[
-                        past_orders['order_date'] >= (current_date - timedelta(days=7))
-                    ]
-                    if not last_7_days.empty:
-                        df_result.loc[idx, 'SMA_7_Category'] = last_7_days.groupby('order_date')['sales_amount'].sum().mean()
-                    
-                    # SMA_30: среднее за последние 30 дней
-                    last_30_days = past_orders[
-                        past_orders['order_date'] >= (current_date - timedelta(days=30))
-                    ]
-                    if not last_30_days.empty:
-                        df_result.loc[idx, 'SMA_30_Category'] = last_30_days.groupby('order_date')['sales_amount'].sum().mean()
-                    
-                    # 3. Импульс (Momentum): отношение среднего за неделю к среднему за месяц
-                    week_avg = last_7_days.groupby('order_date')['sales_amount'].sum().mean() if not last_7_days.empty else np.nan
-                    month_avg = last_30_days.groupby('order_date')['sales_amount'].sum().mean() if not last_30_days.empty else np.nan
-                    
-                    if pd.notna(week_avg) and pd.notna(month_avg) and month_avg > 0:
-                        df_result.loc[idx, 'Momentum_Category'] = week_avg / month_avg
-                    
-                    # 4. Скользящее стандартное отклонение (за 30 дней)
-                    if len(last_30_days) > 1:
-                        daily_sums = last_30_days.groupby('order_date')['sales_amount'].sum()
-                        df_result.loc[idx, 'StdDev_Category'] = daily_sums.std()
-        else:
-            # Если нет category_id, считаем только по точкам
-            unique_outlets = df_result[outlet_col].unique()
-            logger.info(f"Расчет фичей продаж для {len(unique_outlets)} точек продаж...")
-            
-            for outlet_id in unique_outlets:
-                outlet_history = df_history[
-                    df_history['outlet_id'] == outlet_id
-                ].sort_values('order_date')
-                
-                if outlet_history.empty:
-                    continue
-                
-                outlet_mask = df_result[outlet_col] == outlet_id
-                outlet_dates = df_result.loc[outlet_mask, date_col].sort_values()
-                
-                for idx in outlet_dates.index:
-                    current_date = outlet_dates.loc[idx]
-                    past_orders = outlet_history[outlet_history['order_date'] < current_date]
-                    
-                    if past_orders.empty:
-                        continue
-                    
-                    # 1. Сумма предыдущего заказа
-                    last_order = past_orders[past_orders['order_date'] == past_orders['order_date'].max()]
-                    prev_amount = last_order['sales_amount'].sum()
-                    df_result.loc[idx, 'Prev_Order_Amount_Category'] = prev_amount
-                    
-                    # 2. SMA за 3, 7, 30 дней
-                    last_3_days = past_orders[past_orders['order_date'] >= (current_date - timedelta(days=3))]
-                    if not last_3_days.empty:
-                        df_result.loc[idx, 'SMA_3_Category'] = last_3_days.groupby('order_date')['sales_amount'].sum().mean()
-                    
-                    last_7_days = past_orders[past_orders['order_date'] >= (current_date - timedelta(days=7))]
-                    if not last_7_days.empty:
-                        df_result.loc[idx, 'SMA_7_Category'] = last_7_days.groupby('order_date')['sales_amount'].sum().mean()
-                    
-                    last_30_days = past_orders[past_orders['order_date'] >= (current_date - timedelta(days=30))]
-                    if not last_30_days.empty:
-                        df_result.loc[idx, 'SMA_30_Category'] = last_30_days.groupby('order_date')['sales_amount'].sum().mean()
-                    
-                    # 3. Импульс
-                    week_avg = last_7_days.groupby('order_date')['sales_amount'].sum().mean() if not last_7_days.empty else np.nan
-                    month_avg = last_30_days.groupby('order_date')['sales_amount'].sum().mean() if not last_30_days.empty else np.nan
-                    
-                    if pd.notna(week_avg) and pd.notna(month_avg) and month_avg > 0:
-                        df_result.loc[idx, 'Momentum_Category'] = week_avg / month_avg
-                    
-                    # 4. Стандартное отклонение
-                    if len(last_30_days) > 1:
-                        daily_sums = last_30_days.groupby('order_date')['sales_amount'].sum()
-                        df_result.loc[idx, 'StdDev_Category'] = daily_sums.std()
-        
-        logger.info(f"Добавлены фичи продаж: {len(df_result.columns)} колонок всего")
-        
-        return df_result
+    # Инициализация колонок
+    df_result['Prev_Order_Amount_Category'] = np.nan
+    df_result['SMA_3_Category'] = np.nan
+    df_result['SMA_7_Category'] = np.nan
+    df_result['SMA_30_Category'] = np.nan
+    df_result['Momentum_Category'] = np.nan
+    df_result['StdDev_Category'] = np.nan
     
-    except Exception as e:
-        logger.error(f"Ошибка при расчете фичей продаж: {e}")
-        df_result['Prev_Order_Amount_Category'] = np.nan
-        df_result['SMA_3_Category'] = np.nan
-        df_result['SMA_7_Category'] = np.nan
-        df_result['SMA_30_Category'] = np.nan
-        df_result['Momentum_Category'] = np.nan
-        df_result['StdDev_Category'] = np.nan
-        return df_result
-    finally:
-        if conn:
-            conn.close()
-
+    # Расчет для каждой уникальной комбинации outlet + category
+    if category_col is not None:
+        unique_groups = df_result[[outlet_col, category_col]].drop_duplicates()
+        logger.info(f"Расчет фичей продаж для {len(unique_groups)} групп (точка x категория)...")
+        
+        for _, row in unique_groups.iterrows():
+            outlet_id = row[outlet_col]
+            category_id = row[category_col]
+            
+            if pd.isna(category_id):
+                continue
+            
+            # Фильтрация данных по точке и категории
+            group_data = df_result[
+                (df_result[outlet_col] == outlet_id) & 
+                (df_result[category_col] == category_id)
+            ].sort_values(date_col)
+            
+            if group_data.empty:
+                continue
+            
+            # Фильтрация данных для текущей группы в df_result
+            group_mask = (df_result[outlet_col] == outlet_id) & \
+                        (df_result[category_col] == category_id)
+            group_dates = df_result.loc[group_mask, date_col].sort_values()
+            
+            for idx in group_dates.index:
+                current_date = group_dates.loc[idx]
+                
+                # Прошлые заказы для этой группы
+                past_orders = group_data[group_data[date_col] < current_date]
+                
+                if past_orders.empty:
+                    continue
+                
+                # 1. Сумма предыдущего заказа по категории
+                last_order = past_orders[past_orders[date_col] == past_orders[date_col].max()]
+                prev_amount = last_order[amount_col].sum()
+                df_result.loc[idx, 'Prev_Order_Amount_Category'] = prev_amount
+                
+                # 2. SMA (Simple Moving Average) за 3, 7, 30 дней
+                last_3_days = past_orders[
+                    past_orders[date_col] >= (current_date - timedelta(days=3))
+                ]
+                if not last_3_days.empty:
+                    df_result.loc[idx, 'SMA_3_Category'] = last_3_days.groupby(date_col)[amount_col].sum().mean()
+                
+                last_7_days = past_orders[
+                    past_orders[date_col] >= (current_date - timedelta(days=7))
+                ]
+                if not last_7_days.empty:
+                    df_result.loc[idx, 'SMA_7_Category'] = last_7_days.groupby(date_col)[amount_col].sum().mean()
+                
+                last_30_days = past_orders[
+                    past_orders[date_col] >= (current_date - timedelta(days=30))
+                ]
+                if not last_30_days.empty:
+                    df_result.loc[idx, 'SMA_30_Category'] = last_30_days.groupby(date_col)[amount_col].sum().mean()
+                
+                # 3. Импульс (Momentum)
+                week_avg = last_7_days.groupby(date_col)[amount_col].sum().mean() if not last_7_days.empty else np.nan
+                month_avg = last_30_days.groupby(date_col)[amount_col].sum().mean() if not last_30_days.empty else np.nan
+                
+                if pd.notna(week_avg) and pd.notna(month_avg) and month_avg > 0:
+                    df_result.loc[idx, 'Momentum_Category'] = week_avg / month_avg
+                
+                # 4. Скользящее стандартное отклонение
+                if len(last_30_days) > 1:
+                    daily_sums = last_30_days.groupby(date_col)[amount_col].sum()
+                    df_result.loc[idx, 'StdDev_Category'] = daily_sums.std()
+    else:
+        unique_outlets = df_result[outlet_col].unique()
+        logger.info(f"Расчет фичей продаж для {len(unique_outlets)} точек продаж...")
+        
+        for outlet_id in unique_outlets:
+            outlet_data = df_result[
+                df_result[outlet_col] == outlet_id
+            ].sort_values(date_col)
+            
+            if outlet_data.empty:
+                continue
+            
+            outlet_mask = df_result[outlet_col] == outlet_id
+            outlet_dates = df_result.loc[outlet_mask, date_col].sort_values()
+            
+            for idx in outlet_dates.index:
+                current_date = outlet_dates.loc[idx]
+                past_orders = outlet_data[outlet_data[date_col] < current_date]
+                
+                if past_orders.empty:
+                    continue
+                
+                last_order = past_orders[past_orders[date_col] == past_orders[date_col].max()]
+                prev_amount = last_order[amount_col].sum()
+                df_result.loc[idx, 'Prev_Order_Amount_Category'] = prev_amount
+                
+                last_3_days = past_orders[past_orders[date_col] >= (current_date - timedelta(days=3))]
+                if not last_3_days.empty:
+                    df_result.loc[idx, 'SMA_3_Category'] = last_3_days.groupby(date_col)[amount_col].sum().mean()
+                
+                last_7_days = past_orders[past_orders[date_col] >= (current_date - timedelta(days=7))]
+                if not last_7_days.empty:
+                    df_result.loc[idx, 'SMA_7_Category'] = last_7_days.groupby(date_col)[amount_col].sum().mean()
+                
+                last_30_days = past_orders[past_orders[date_col] >= (current_date - timedelta(days=30))]
+                if not last_30_days.empty:
+                    df_result.loc[idx, 'SMA_30_Category'] = last_30_days.groupby(date_col)[amount_col].sum().mean()
+                
+                week_avg = last_7_days.groupby(date_col)[amount_col].sum().mean() if not last_7_days.empty else np.nan
+                month_avg = last_30_days.groupby(date_col)[amount_col].sum().mean() if not last_30_days.empty else np.nan
+                
+                if pd.notna(week_avg) and pd.notna(month_avg) and month_avg > 0:
+                    df_result.loc[idx, 'Momentum_Category'] = week_avg / month_avg
+                
+                if len(last_30_days) > 1:
+                    daily_sums = last_30_days.groupby(date_col)[amount_col].sum()
+                    df_result.loc[idx, 'StdDev_Category'] = daily_sums.std()
+    
+    logger.info(f"Добавлены фичи продаж: {len(df_result.columns)} колонок всего")
+    
+    return df_result
 
 def fetch_raw_data(start_date: Union[str, datetime], end_date: Union[str, datetime], 
                    add_features: bool = False, add_history_features: bool = False, 
