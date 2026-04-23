@@ -6,9 +6,12 @@ import logging
 import os
 from dotenv import load_dotenv
 import numpy as np
-from catboost import CatBoostRegressor
+from catboost import CatBoostRegressor, Pool, cv
 import shutil
-from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import KFold
+import warnings
+warnings.filterwarnings('ignore')
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
@@ -818,25 +821,133 @@ def main():
         # Преобразование target_col к числовому типу для предотвращения ошибок с decimal.Decimal
         df_train_clean[target_col] = pd.to_numeric(df_train_clean[target_col], errors='coerce')
         
+        # ==================== 1. ОБРАБОТКА ВЫБРОСОВ И ЛОГАРИФМИРОВАНИЕ ЦЕЛЕВОЙ ПЕРЕМЕННОЙ ====================
+        logger.info("Обработка выбросов в целевой переменной...")
+        
+        # Логарифмирование целевой переменной для нормализации распределения
+        df_train_clean['log_target'] = np.log1p(df_train_clean[target_col])
+        
+        # Расчет границ для удаления выбросов (метод IQR)
+        Q1 = df_train_clean['log_target'].quantile(0.25)
+        Q3 = df_train_clean['log_target'].quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 3 * IQR
+        upper_bound = Q3 + 3 * IQR
+        
+        # Фильтрация выбросов
+        outliers_mask = (df_train_clean['log_target'] < lower_bound) | (df_train_clean['log_target'] > upper_bound)
+        n_outliers = outliers_mask.sum()
+        
+        if n_outliers > 0:
+            logger.info(f"Удалено {n_outliers} выбросов ({100*n_outliers/len(df_train_clean):.2f}% данных)")
+            df_train_clean = df_train_clean[~outliers_mask]
+        
         X_train = df_train_clean[feature_cols]
-        y_train = df_train_clean[target_col]
+        y_train = df_train_clean['log_target']  # Используем логарифмированную целевую переменную
+        y_train_original = df_train_clean[target_col]  # Сохраняем оригинальные значения для метрик
         
-        # Шаг 3: Обучение модели CatBoost
-        logger.info("Обучение модели CatBoost...")
+        # ==================== 2. КРОСС-ВАЛИДАЦИЯ И АНСАМБЛИРОВАНИЕ МОДЕЛЕЙ ====================
+        logger.info("Настройка кросс-валидации и ансамблирования...")
         
-        model = CatBoostRegressor(
-            iterations=1000,
-            depth=6,
-            learning_rate=0.1,
-            loss_function='RMSE',
-            verbose=100,
-            cat_features=categorical_features if categorical_features else None,
-            random_seed=42
-        )
+        # Параметры для CatBoost с MAE вместо RMSE
+        base_params = {
+            'iterations': 1000,
+            'depth': 6,
+            'learning_rate': 0.1,
+            'loss_function': 'MAE',  # MAE более устойчив к выбросам
+            'eval_metric': 'MAE',
+            'verbose': 100,
+            'cat_features': categorical_features if categorical_features else None,
+            'random_seed': 42,
+            'early_stopping_rounds': 50
+        }
         
-        model.fit(X_train, y_train)
+        # Разные конфигурации для ансамбля
+        ensemble_configs = [
+            {**base_params, 'depth': 6, 'learning_rate': 0.1, 'random_seed': 42},
+            {**base_params, 'depth': 8, 'learning_rate': 0.05, 'random_seed': 123},
+            {**base_params, 'depth': 4, 'learning_rate': 0.15, 'random_seed': 456},
+        ]
         
-        logger.info("Модель успешно обучена!")
+        # Кросс-валидация для оценки качества
+        n_splits = 5
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+        
+        cv_scores_mae = []
+        cv_scores_rmse = []
+        cv_scores_r2 = []
+        
+        logger.info(f"Проведение кросс-валидации ({n_splits} folds)...")
+        
+        for fold_idx, (train_idx, val_idx) in enumerate(kf.split(X_train)):
+            X_fold_train = X_train.iloc[train_idx]
+            X_fold_val = X_train.iloc[val_idx]
+            y_fold_train = y_train.iloc[train_idx]
+            y_fold_val = y_train.iloc[val_idx]
+            
+            # Создаем Pool для CatBoost
+            train_pool = Pool(X_fold_train, y_fold_train, cat_features=categorical_features if categorical_features else None)
+            val_pool = Pool(X_fold_val, y_fold_val, cat_features=categorical_features if categorical_features else None)
+            
+            model_cv = CatBoostRegressor(**base_params)
+            model_cv.fit(train_pool, eval_set=val_pool, verbose=False)
+            
+            # Предсказания на валидации
+            y_pred_fold = model_cv.predict(val_pool)
+            
+            # Метрики (в логарифмическом пространстве)
+            mae_fold = mean_absolute_error(y_fold_val, y_pred_fold)
+            rmse_fold = np.sqrt(mean_squared_error(y_fold_val, y_pred_fold))
+            r2_fold = r2_score(y_fold_val, y_pred_fold)
+            
+            cv_scores_mae.append(mae_fold)
+            cv_scores_rmse.append(rmse_fold)
+            cv_scores_r2.append(r2_fold)
+            
+            logger.info(f"Fold {fold_idx+1}: MAE={mae_fold:.4f}, RMSE={rmse_fold:.4f}, R²={r2_fold:.4f}")
+        
+        logger.info(f"Кросс-валидация завершена. Средние метрики:")
+        logger.info(f"  MAE: {np.mean(cv_scores_mae):.4f} (+/- {np.std(cv_scores_mae):.4f})")
+        logger.info(f"  RMSE: {np.mean(cv_scores_rmse):.4f} (+/- {np.std(cv_scores_rmse):.4f})")
+        logger.info(f"  R²: {np.mean(cv_scores_r2):.4f} (+/- {np.std(cv_scores_r2):.4f})")
+        
+        # ==================== 3. ОБУЧЕНИЕ АНСАМБЛЯ МОДЕЛЕЙ ====================
+        logger.info("Обучение ансамбля моделей...")
+        
+        ensemble_models = []
+        
+        for idx, config in enumerate(ensemble_configs):
+            logger.info(f"Обучение модели {idx+1}/{len(ensemble_configs)}...")
+            
+            # Создаем Pool с использованием всей обучающей выборки
+            train_pool = Pool(X_train, y_train, cat_features=categorical_features if categorical_features else None)
+            
+            model = CatBoostRegressor(**config)
+            model.fit(train_pool, verbose=False)
+            
+            ensemble_models.append(model)
+            logger.info(f"Модель {idx+1} обучена")
+        
+        logger.info(f"Ансамбль из {len(ensemble_models)} моделей успешно обучен!")
+        
+        # Функция для предсказания ансамблем
+        def ensemble_predict(X):
+            """Усреднение предсказаний всех моделей ансамбля"""
+            predictions = [model.predict(X) for model in ensemble_models]
+            return np.mean(predictions, axis=0)
+        
+        # Оценка качества на тренировочных данных
+        train_predictions_log = ensemble_predict(X_train)
+        
+        # Метрики в логарифмическом пространстве
+        mae_train_log = mean_absolute_error(y_train, train_predictions_log)
+        rmse_train_log = np.sqrt(mean_squared_error(y_train, train_predictions_log))
+        r2_train_log = r2_score(y_train, train_predictions_log)
+        
+        logger.info(f"Метрики на тренировочных данных (логарифмическое пространство):")
+        logger.info(f"  MAE: {mae_train_log:.4f}")
+        logger.info(f"  RMSE: {rmse_train_log:.4f}")
+        logger.info(f"  R²: {r2_train_log:.4f}")
         
         # Шаг 4: Загрузка тестовых данных с сегодняшней датой
         logger.info(f"Загрузка тестовых данных для даты {today_date.strftime('%Y-%m-%d')}...")
@@ -888,8 +999,11 @@ def main():
                 if X_test[col].isna().any():
                     X_test[col] = X_test[col].fillna(0)
         
-        # Предсказание
-        predictions = model.predict(X_test)
+        # Предсказание с использованием ансамбля моделей
+        predictions_log = ensemble_predict(X_test)
+        
+        # Обратное преобразование из логарифмического пространства (expm1 = exp(x) - 1)
+        predictions = np.expm1(predictions_log)
         
         # Добавление предсказаний в DataFrame
         df_test['Predicted_Category_Sum'] = predictions
@@ -902,21 +1016,25 @@ def main():
         # Расчет Prediction_Confidence на основе исторической точности модели
         logger.info("Расчет метрик уверенности предсказаний...")
         
-        # Расчет MAE на тренировочных данных для оценки точности
-        train_predictions = model.predict(X_train)
-        mae_train = mean_absolute_error(y_train, train_predictions)
-        rmse_train = np.sqrt(np.mean((y_train - train_predictions) ** 2))
+        # Расчет MAE на тренировочных данных для оценки точности (в оригинальном пространстве)
+        train_predictions_original = np.expm1(train_predictions_log)
+        mae_train = mean_absolute_error(y_train_original, train_predictions_original)
+        rmse_train = np.sqrt(mean_squared_error(y_train_original, train_predictions_original))
+        r2_train = r2_score(y_train_original, train_predictions_original)
+        
+        logger.info(f"Метрики на тренировочных данных (оригинальное пространство):")
+        logger.info(f"  MAE: {mae_train:.2f}")
+        logger.info(f"  RMSE: {rmse_train:.2f}")
+        logger.info(f"  R²: {r2_train:.4f}")
         
         # Расчет confidence как обратной величины от относительной ошибки
         # Confidence будет в диапазоне [0, 1], где 1 - максимальная уверенность
-        mean_actual = y_train.mean()
+        mean_actual = y_train_original.mean()
         relative_error = mae_train / mean_actual if mean_actual > 0 else 1
         
         # Базовая уверенность модели (чем меньше ошибка, тем выше уверенность)
         base_confidence = max(0, min(1, 1 - relative_error))
         
-        logger.info(f"  MAE на тренировочных данных: {mae_train:.2f}")
-        logger.info(f"  RMSE на тренировочных данных: {rmse_train:.2f}")
         logger.info(f"  Базовая уверенность модели: {base_confidence:.3f}")
         
         # Для каждого предсказания рассчитываем индивидуальную уверенность
