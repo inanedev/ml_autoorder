@@ -245,6 +245,8 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
         - Days_Since_Last_Order_Category: дней назад точка брала эту категорию
         - Days_Since_Last_Order_Total: дней назад был любой заказ от точки
         - Average_Interval_Category: средний интервал между закупками категории
+        - Days_Until_Next_Visit: дней до следующего визита точки (для последнего визита 
+          используется значение из визита недельной давности, или 7 если такого визита нет)
         
     Примечание:
         Все расчеты производятся только на основе предоставленного DataFrame.
@@ -294,6 +296,7 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
     df_result['Days_Since_Last_Order_Category'] = np.nan
     df_result['Days_Since_Last_Order_Total'] = np.nan
     df_result['Average_Interval_Category'] = np.nan
+    df_result['Days_Until_Next_Visit'] = np.nan
     
     # Расчет для каждой уникальной комбинации outlet + date
     unique_outlets = df_result[outlet_col].unique()
@@ -310,7 +313,7 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
         # Сортировка по дате
         outlet_data = outlet_data.sort_values(date_col)
         
-        # Расчет Days_Since_Last_Order_Total для каждой даты
+        # Расчет Days_Since_Last_Order_Total и Days_Until_Next_Visit для каждой даты
         outlet_mask = df_result[outlet_col] == outlet_id
         outlet_indices = df_result.loc[outlet_mask].index
         
@@ -319,6 +322,9 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
             
             # Прошлые заказы этой точки (все записи до текущей даты)
             past_orders = outlet_data[outlet_data[date_col] < current_date]
+            
+            # Будущие заказы этой точки (все записи после текущей даты)
+            future_orders = outlet_data[outlet_data[date_col] > current_date]
             
             if not past_orders.empty:
                 # Days_Since_Last_Order_Total
@@ -337,6 +343,28 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
                             last_category_date = category_history[date_col].max()
                             days_since_cat = (current_date - last_category_date).days
                             df_result.loc[idx, 'Days_Since_Last_Order_Category'] = days_since_cat
+            
+            # Расчет Days_Until_Next_Visit (дней до следующего визита)
+            if not future_orders.empty:
+                next_visit_date = future_orders[date_col].min()
+                days_until = (next_visit_date - current_date).days
+                df_result.loc[idx, 'Days_Until_Next_Visit'] = days_until
+            else:
+                # Для последнего визита: берем значение визита недельной давности или 7
+                week_ago_date = current_date - timedelta(days=7)
+                week_ago_orders = outlet_data[outlet_data[date_col] == week_ago_date]
+                
+                if not week_ago_orders.empty:
+                    # Берем значение Days_Until_Next_Visit для визита недельной давности
+                    week_ago_idx = week_ago_orders.index[0]
+                    week_ago_value = df_result.loc[week_ago_idx, 'Days_Until_Next_Visit']
+                    if pd.notna(week_ago_value):
+                        df_result.loc[idx, 'Days_Until_Next_Visit'] = week_ago_value
+                    else:
+                        df_result.loc[idx, 'Days_Until_Next_Visit'] = 7
+                else:
+                    # Если визита недельной давности нет, ставим 7
+                    df_result.loc[idx, 'Days_Until_Next_Visit'] = 7
         
         # Расчет Average_Interval_Category (средний интервал между заказами категории)
         if category_col is not None:
@@ -572,7 +600,7 @@ def fetch_raw_data(start_date: Union[str, datetime], end_date: Union[str, dateti
         end_date: Конечная дата (YYYY-MM-DD или объект date/datetime)
         add_features: Если True, добавляет календарные фичи для ML
         add_history_features: Если True, добавляет фичи истории заказов (Days_Since_Last_Order_Category,
-                              Days_Since_Last_Order_Total, Average_Interval_Category)
+                              Days_Since_Last_Order_Total, Average_Interval_Category, Days_Until_Next_Visit)
         add_sales_features_flag: Если True, добавляет фичи продаж (Prev_Order_Amount_Category,
                                  SMA_3_Category, SMA_7_Category, SMA_30_Category, 
                                  Momentum_Category, StdDev_Category)
@@ -923,6 +951,7 @@ def main():
             'month', 'quarter', 'week_of_year', 'is_month_start', 'is_month_end',
             'day_of_month', 'day_of_year', 'days_to_holiday', 'days_from_holiday',
             'Days_Since_Last_Order_Category', 'Days_Since_Last_Order_Total', 'Average_Interval_Category',
+            'Days_Until_Next_Visit',
             'Prev_Order_Amount_Category', 'SMA_3_Category', 'SMA_7_Category', 'SMA_30_Category',
             'Momentum_Category', 'StdDev_Category',
             'Predicted_Category_Sum', 'Prediction_Confidence'
