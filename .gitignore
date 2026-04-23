@@ -1,4 +1,1 @@
-```
-__pycache__/
-*.pyc
-```
+Nothing needs to be added to .gitignore since the only modified file is a SQL file (.sql), which is a source code file and should not be ignored.
