@@ -133,7 +133,7 @@ def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     
     # Определение колонки с датой
     date_col = None
-    for col_name in ['date', 'Date', 'DATE']:
+    for col_name in ['date', 'Date', 'DATE', 'VisitDate', 'visitdate']:
         if col_name in df.columns:
             date_col = col_name
             break
@@ -261,19 +261,19 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
     
     # Определение имен колонок
     date_col = None
-    for col_name in ['date', 'Date', 'DATE']:
+    for col_name in ['date', 'Date', 'DATE', 'VisitDate', 'visitdate']:
         if col_name in df.columns:
             date_col = col_name
             break
     
     outlet_col = None
-    for col_name in ['outlet_id', 'OutletID', 'OUTLET_ID', 'outletId', 'PointID']:
+    for col_name in ['outlet_id', 'OutletID', 'OUTLET_ID', 'outletId', 'PointID', 'pointid']:
         if col_name in df.columns:
             outlet_col = col_name
             break
     
     category_col = None
-    for col_name in ['category_id', 'CategoryID', 'CATEGORY_ID', 'categoryId']:
+    for col_name in ['category_id', 'CategoryID', 'CATEGORY_ID', 'categoryId', 'Category_Id']:
         if col_name in df.columns:
             category_col = col_name
             break
@@ -419,19 +419,19 @@ def add_sales_features(df: pd.DataFrame, start_date: str, end_date: str) -> pd.D
     
     # Определение имен колонок
     date_col = None
-    for col_name in ['date', 'Date', 'DATE']:
+    for col_name in ['date', 'Date', 'DATE', 'VisitDate', 'visitdate']:
         if col_name in df.columns:
             date_col = col_name
             break
     
     outlet_col = None
-    for col_name in ['outlet_id', 'OutletID', 'OUTLET_ID', 'outletId', 'PointID']:
+    for col_name in ['outlet_id', 'OutletID', 'OUTLET_ID', 'outletId', 'PointID', 'pointid']:
         if col_name in df.columns:
             outlet_col = col_name
             break
     
     category_col = None
-    for col_name in ['category_id', 'CategoryID', 'CATEGORY_ID', 'categoryId']:
+    for col_name in ['category_id', 'CategoryID', 'CATEGORY_ID', 'categoryId', 'Category_Id']:
         if col_name in df.columns:
             category_col = col_name
             break
