@@ -62,11 +62,12 @@ GO
  * 
  * Логика работы:
  *   1. Выбираются все активные точки продаж
- *   2. Для каждой точки формируются признаки из SNS_ML_Get_Raw_Data
- *   3. Добавляются календарные фичи для TargetDate
- *   4. Рассчитываются фичи истории заказов по данным ДО TargetDate
- *   5. Рассчитываются фичи продаж по данным ДО TargetDate
- *   6. SumRoubles НЕ включается в результат (это целевая переменная для предсказания)
+ *   2. Отбираются только категории, которые продавались хоть одному клиенту за последний месяц (до @TargetDate)
+ *   3. Для каждой точки формируются признаки из SNS_ML_Get_Raw_Data для отобранных категорий
+ *   4. Добавляются календарные фичи для TargetDate
+ *   5. Рассчитываются фичи истории заказов по данным ДО TargetDate
+ *   6. Рассчитываются фичи продаж по данным ДО TargetDate
+ *   7. SumRoubles НЕ включается в результат (это целевая переменная для предсказания)
  * 
  * Пример использования:
  *   EXEC dbo.SNS_ML_Get_Test_Data @TargetDate = '2024-01-15';
@@ -74,6 +75,7 @@ GO
  * Примечания:
  *   - Размер сетки микрорегиона: 0.027 градуса (~3 км)
  *   - Фильтруются только активные товары и точки
+ *   - Категории ограничены теми, которые продавались за последний месяц (до @TargetDate)
  *   - Координаты преобразуются из строкового формата с заменой запятой на точку
  *   - Все лаговые фичи считаются строго по данным до @TargetDate (не включая саму дату)
  */
@@ -144,9 +146,15 @@ BEGIN
 
         CREATE CLUSTERED INDEX IX_PF_PointID ON #PointFeatures (PointID);
 
-        -- 3. Список всех активных категорий
+        -- 3. Список категорий, которые продавались хоть одному клиенту за последний месяц
         IF OBJECT_ID('tempdb..#Categories') IS NOT NULL DROP TABLE #Categories;
-        SELECT DISTINCT CategoryID INTO #Categories FROM #ItemMap;
+        SELECT DISTINCT m.CategoryID INTO #Categories 
+        FROM DS_Orders o 
+        INNER JOIN DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
+        INNER JOIN #ItemMap m ON CAST(oi.iID AS INT) = m.iid 
+        WHERE o.orType = 1 
+          AND o.orDate >= DATEADD(MONTH, -1, @TargetDate)
+          AND o.orDate < @TargetDate;
         
         CREATE CLUSTERED INDEX IX_Cat_CategoryID ON #Categories (CategoryID);
 
