@@ -354,6 +354,21 @@ if __name__ == "__main__":
             print(f"\nИтого сумма заказа: {total_cost:.2f} руб.")
             print(f"Прогноз категории: {TEST_FORECAST_AMOUNT:.2f} руб.")
             print(f"Утилизация бюджета: {(total_cost/TEST_FORECAST_AMOUNT)*100:.1f}%")
+            
+            # Пример сохранения в БД (раскомментировать при необходимости)
+            # from save_recommendation import RecommendationStorage
+            # from datetime import datetime
+            # storage = RecommendationStorage()
+            # saved_count = storage.save_recommendation(
+            #     recommendation_df=recommendation,
+            #     point_id=TEST_POINT_ID,
+            #     category_id=TEST_CATEGORY_ID,
+            #     forecast_amount=TEST_FORECAST_AMOUNT,
+            #     days_until_visit=TEST_DAYS_UNTIL_VISIT,
+            #     reference_date=datetime.now(),
+            #     model_version="v1.0.0"
+            # )
+            # print(f"\nСохранено {saved_count} записей в таблицу SNS_ML_Brand_Recommendations")
         else:
             print("Рекомендаций не сформировано.")
             

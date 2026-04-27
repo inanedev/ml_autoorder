@@ -1,108 +1,50 @@
 ```
-# Dependencies
-__pycache__/
+# Compiled and build artifacts
 *.pyc
-*.pyo
-*.pyd
-*.py.class
-*.class
-*.o
-*.obj
-*.out
-*.exe
-*.dll
-*.so
-*.a
-*.lib
-*.dylib
-*.jar
-*.war
-*.ear
-*.zip
-*.tar.gz
-*.tgz
-*.tar.bz2
-*.tar.xz
-*.tar.zst
-*.gz
-*.bz2
-*.xz
-*.7z
-*.rar
-*.zst
-*.lz4
-*.lzh
-*.cab
-*.arj
-*.rpm
-*.deb
-*.Z
-*.lz
-*.lzo
+__pycache__/
 
-# Virtual environments
-venv/
+# Dependencies
 .venv/
-env/
-.ENV/
+venv/
+node_modules/
+dist/
+build/
+target/
+.gradle/
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Environment
 .env
 .env.local
-.env.*
-.env~
-.venv.bak
-virtualenv/
-pip-log.txt
-pip-delete-this-directory.txt
+*.env.*
 
-# Build and distribution artifacts
-build/
-dist/
-*.egg
-*.egg-info/
-.eggs/
-.installed.cfg
-*.egg-info/
-*.so
-*.whl
-*.sublime-project
-*.sublime-workspace
-.pytest_cache/
-.coverage
-htmlcov/
-.coverage.*
-.nox/
-.tox/
-.cover/
-
-# IDE specific files
+# Editors
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
-desktop.ini
-ehthumbs.db
-Icon?
-apidoc/
-doc/
-docs/
 
-# Logs
-*.log
-*.out
-*.pid
-*.seed
-*.session
+# Coverage reports
+.coverage
+coverage/
+htmlcov/
+
+# Python specific
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
 
 # OS generated files
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
-*:*
 ```
