@@ -1,13 +1,16 @@
+DROP PROCEDURE IF EXISTS SNS_ML_Get_Brand_Sales;
+GO
+
 CREATE PROCEDURE SNS_ML_Get_Brand_Sales
     @StartDate DATE = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
-
+    
     -- Если дата не указана, используем текущую дату
     IF @StartDate IS NULL
         SET @StartDate = CAST(GETDATE() AS DATE);
-
+    
     -- Рассчитываем дату начала периода (3 месяца назад)
     DECLARE @EndDate DATE = @StartDate;
     DECLARE @PeriodStart DATE = DATEADD(MONTH, -3, @StartDate);
@@ -100,3 +103,4 @@ BEGIN
         CategoryID, 
         brand;
 END;
+GO
