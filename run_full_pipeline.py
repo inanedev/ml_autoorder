@@ -173,7 +173,11 @@ def generate_brand_recommendations(
         logger.error("Отсутствуют обязательные колонки pointid/categoryid в предсказаниях")
         return results
     
-    grouped = predictions_df.groupby(group_cols)[predictions_df.columns[2]].mean().reset_index()
+    # Получаем имя третьей колонки (с суммами)
+    value_col = predictions_df.columns[2]
+    
+    # Группируем и агрегируем, используя as_index=False чтобы избежать конфликта имен
+    grouped = predictions_df.groupby(group_cols, as_index=False)[value_col].mean()
     
     # Переименовываем последнюю колонку в 'sumroubles' для единообразия
     grouped.columns = group_cols + ['sumroubles']
