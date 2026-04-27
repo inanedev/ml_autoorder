@@ -182,7 +182,26 @@ def generate_brand_recommendations(
     # Переименовываем последнюю колонку в 'sumroubles' для единообразия
     grouped = grouped.rename(columns={value_col: 'sumroubles'})
     
+    # Явно убеждаемся, что колонки имеют правильные имена
+    expected_cols = ['pointid', 'categoryid', 'sumroubles']
+    if list(grouped.columns) != expected_cols:
+        logger.warning(f"Ожидаемые колонки: {expected_cols}, фактические: {list(grouped.columns)}")
+        # Пробуем найти колонки в любом регистре
+        col_mapping = {}
+        for col in grouped.columns:
+            col_lower = col.lower()
+            if col_lower == 'pointid':
+                col_mapping[col] = 'pointid'
+            elif col_lower == 'categoryid':
+                col_mapping[col] = 'categoryid'
+            elif col_lower == 'sumroubles':
+                col_mapping[col] = 'sumroubles'
+        if col_mapping:
+            grouped = grouped.rename(columns=col_mapping)
+            logger.info(f"Колонки переименованы: {col_mapping}")
+    
     logger.info(f"Генерация рекомендаций для {len(grouped)} пар точка-категория...")
+    logger.info(f"Колонки в grouped: {list(grouped.columns)}")
     
     for idx, row in grouped.iterrows():
         point_id = int(row['pointid'])
