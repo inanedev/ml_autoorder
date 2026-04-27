@@ -180,7 +180,7 @@ def generate_brand_recommendations(
     grouped = predictions_df.groupby(group_cols, as_index=False)[[value_col]].mean()
     
     # Переименовываем последнюю колонку в 'sumroubles' для единообразия
-    grouped.columns = group_cols + ['sumroubles']
+    grouped = grouped.rename(columns={value_col: 'sumroubles'})
     
     logger.info(f"Генерация рекомендаций для {len(grouped)} пар точка-категория...")
     
