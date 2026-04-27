@@ -64,7 +64,7 @@ BEGIN
 
     -- Основной запрос: выборка данных о продажах по категориям и брендам за 3 месяца
     SELECT 
-        o.mfid, 
+        o.mfid as PointId, 
         CAST(o.orDate AS DATE) AS VisitDate, 
         pf.BranchID,
         pf.PointClass,
