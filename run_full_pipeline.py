@@ -171,16 +171,31 @@ def generate_brand_recommendations(
         group_cols = ['pointid', 'categoryid']
     else:
         logger.error("Отсутствуют обязательные колонки pointid/categoryid в предсказаниях")
+        logger.info(f"Фактические колонки: {list(predictions_df.columns)}")
         return results
     
-    # Получаем имя третьей колонки (с суммами)
-    value_col = predictions_df.columns[2]
+    # Получаем имя колонки с суммами (предсказанная сумма)
+    possible_value_cols = ['predicted_category_sum', 'sumroubles', 'forecast_amount']
+    value_col = None
+    for col in possible_value_cols:
+        if col in predictions_df.columns:
+            value_col = col
+            break
     
-    # Группируем и агрегируем, используя as_index=False чтобы избежать конфликта имен
-    grouped = predictions_df.groupby(group_cols, as_index=False)[[value_col]].mean()
+    if value_col is None:
+        # Если ни одна из известных колонок не найдена, берем третью колонку
+        if len(predictions_df.columns) >= 3:
+            value_col = predictions_df.columns[2]
+        else:
+            logger.error("Не найдена колонка с суммами предсказаний")
+            return results
     
-    # Переименовываем последнюю колонку в 'sumroubles' для единообразия
-    grouped = grouped.rename(columns={value_col: 'sumroubles'})
+    # Группируем и агрегируем, используя as_index=False чтобы сохранить группирующие колонки
+    grouped = predictions_df.groupby(group_cols, as_index=False)[value_col].mean()
+    
+    # Переименовываем колонку с суммой в 'sumroubles' для единообразия
+    if value_col != 'sumroubles':
+        grouped = grouped.rename(columns={value_col: 'sumroubles'})
     
     # Явно убеждаемся, что колонки имеют правильные имена
     expected_cols = ['pointid', 'categoryid', 'sumroubles']
@@ -199,6 +214,11 @@ def generate_brand_recommendations(
         if col_mapping:
             grouped = grouped.rename(columns=col_mapping)
             logger.info(f"Колонки переименованы: {col_mapping}")
+    
+    # Проверяем, что categoryid действительно присутствует после всех преобразований
+    if 'categoryid' not in grouped.columns:
+        logger.error(f"Колонка 'categoryid' отсутствует после группировки. Колонки: {list(grouped.columns)}")
+        return results
     
     logger.info(f"Генерация рекомендаций для {len(grouped)} пар точка-категория...")
     logger.info(f"Колонки в grouped: {list(grouped.columns)}")
