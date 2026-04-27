@@ -1,23 +1,14 @@
 ```
-# Compiled and build artifacts
+# Compiled Python files
 *.pyc
 __pycache__/
-
-# Dependencies
-.venv/
-venv/
-node_modules/
-dist/
-build/
-target/
-.gradle/
 
 # Logs and temp files
 *.log
 *.tmp
 *.swp
 
-# Environment
+# Environment files
 .env
 .env.local
 *.env.*
@@ -25,26 +16,4 @@ target/
 # Editors
 .vscode/
 .idea/
-
-# Coverage reports
-.coverage
-coverage/
-htmlcov/
-
-# Python specific
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-.eggs/
-
-# Database files
-*.db
-*.sqlite
-*.sqlite3
-
-# OS generated files
-.DS_Store
-Thumbs.db
 ```
