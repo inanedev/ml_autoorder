@@ -1,54 +1,30 @@
-# Compiled and build artifacts
-*.pyc
+```
+# Dependencies
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py.class
 *.class
 *.o
 *.obj
+*.out
 *.exe
 *.dll
 *.so
 *.a
-*.out
-
-# Dependencies
-node_modules/
-venv/
-.venv/
-.env
-.env.local
-.env.*
-
-# Logs and temp files
-*.log
-*.tmp
-*.swp
-
-# Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Build systems
-dist/
-build/
-target/
-.gradle/
-.mypy_cache/
-.pytest_cache/
-coverage/
-htmlcov/
-.coverage
-
-# System files
-.DS_Store
-Thumbs.db
-
-# Compressed files
+*.lib
+*.dylib
+*.jar
+*.war
+*.ear
 *.zip
-*.gz
-*.tar
+*.tar.gz
 *.tgz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+*.gz
 *.bz2
 *.xz
 *.7z
@@ -63,7 +39,70 @@ Thumbs.db
 *.Z
 *.lz
 *.lzo
-*.tar.gz
-*.tar.bz2
-*.tar.xz
-*.tar.zst
+
+# Virtual environments
+venv/
+.venv/
+env/
+.ENV/
+.env
+.env.local
+.env.*
+.env~
+.venv.bak
+virtualenv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Build and distribution artifacts
+build/
+dist/
+*.egg
+*.egg-info/
+.eggs/
+.installed.cfg
+*.egg-info/
+*.so
+*.whl
+*.sublime-project
+*.sublime-workspace
+.pytest_cache/
+.coverage
+htmlcov/
+.coverage.*
+.nox/
+.tox/
+.cover/
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+Icon?
+apidoc/
+doc/
+docs/
+
+# Logs
+*.log
+*.out
+*.pid
+*.seed
+*.session
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*:*
+```
