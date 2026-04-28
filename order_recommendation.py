@@ -1,6 +1,8 @@
 """
 Модуль формирования рекомендованного заказа на основе прогноза модели.
 
+Оптимизированная версия для пакетной обработки всех точек и категорий за один раз.
+
 Использует реальные хранимые процедуры:
 - SNS_ML_Get_Brand_Rules: возвращает ВСЕ бренды (без параметров)
   Колонки: CategoryID, GroupID, BrandQuantum, ImportanceLabel, PriorityWeight, IsTurboBrand, AvgPrice
@@ -19,13 +21,19 @@
    - Turbo (+5), MustList (+4), DriveList (+3), NPI (+2), SPEED KPI (+1).
    - Локальная популярность в микрорегионе (+2).
 4. Формирует итоговый список заказов.
+
+ОПТИМИЗАЦИИ:
+- Единовременная загрузка всех данных из БД
+- Векторизованные вычисления через pandas merge/groupby
+- Пакетная обработка всех пар точка-категория
+- Минимизация циклов Python
 """
 
 import pandas as pd
 import numpy as np
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Tuple
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import math
 
 # Импортируем функцию подключения из существующего модуля
@@ -41,7 +49,7 @@ class OrderRecommender:
         """Инициализация рекомендателя с кэшированием данных."""
         self._brand_rules_cache: Optional[pd.DataFrame] = None
         self._sales_history_cache: Optional[pd.DataFrame] = None
-        self._cache_key: Optional[str] = None
+        self._reference_date: Optional[datetime] = None
     
     def _prepare_brand_rules(self, df: pd.DataFrame) -> pd.DataFrame:
         """Приводит типы данных и подготавливает DataFrame правил брендов."""
@@ -63,40 +71,36 @@ class OrderRecommender:
             
         return df
     
-    def get_brand_rules(self, category_id: Optional[int] = None, force_refresh: bool = False) -> pd.DataFrame:
+    def get_all_brand_rules(self, force_refresh: bool = False) -> pd.DataFrame:
         """
-        Получает правила брендов через хранимую процедуру SNS_ML_Get_Brand_Rules.
+        Получает ВСЕ правила брендов через хранимую процедуру SNS_ML_Get_Brand_Rules.
         
         Процедура не принимает параметров, возвращает все бренды.
-        Если указан category_id, фильтруем результат в Python.
-        Данные кэшируются после первого запроса для избежания повторных обращений к БД.
+        Данные кэшируются после первого запроса.
         
         Args:
-            category_id: ID категории для фильтрации (опционально)
-            force_refresh: Принудительное обновление кэша (по умолчанию False)
+            force_refresh: Принудительное обновление кэша
+            
+        Returns:
+            DataFrame со всеми правилами брендов
         """
-        # Проверяем кэш
         if self._brand_rules_cache is not None and not force_refresh:
-            df = self._brand_rules_cache.copy()
-            if category_id is not None and 'categoryid' in df.columns:
-                df = df[df['categoryid'] == category_id]
-            return df
+            return self._brand_rules_cache.copy()
         
         conn = None
         try:
+            logger.info("Загрузка всех правил брендов из БД...")
             conn = get_connection()
             sql = "EXEC SNS_ML_Get_Brand_Rules"
             df = pd.read_sql(sql, conn)
             
             if not df.empty:
                 df = self._prepare_brand_rules(df)
-                
-                # Сохраняем в кэш полный набор данных
                 self._brand_rules_cache = df.copy()
+                logger.info(f"Загружено {len(df)} правил брендов для {df['categoryid'].nunique() if 'categoryid' in df.columns else 0} категорий")
+            else:
+                logger.warning("Правила брендов пусты")
                 
-                if category_id is not None and 'categoryid' in df.columns:
-                    df = df[df['categoryid'] == category_id]
-                    
             return df
             
         except Exception as e:
@@ -106,9 +110,60 @@ class OrderRecommender:
             if conn:
                 conn.close()
     
-    def clear_brand_rules_cache(self):
-        """Очищает кэш правил брендов."""
+    def get_all_sales_history(
+        self, 
+        end_date: datetime,
+        force_refresh: bool = False
+    ) -> pd.DataFrame:
+        """
+        Получает ВСЮ историю продаж через хранимую процедуру SNS_ML_Get_Brand_Sales.
+        
+        Процедура принимает @StartDate, возвращает продажи за 3 месяца до этой даты.
+        Данные кэшируются для указанной даты.
+        
+        Args:
+            end_date: Дата окончания периода продаж
+            force_refresh: Принудительное обновление кэша
+            
+        Returns:
+            DataFrame со всей историей продаж
+        """
+        # Проверяем кэш по дате
+        if (self._sales_history_cache is not None and 
+            self._reference_date == end_date and 
+            not force_refresh):
+            return self._sales_history_cache.copy()
+        
+        conn = None
+        try:
+            logger.info(f"Загрузка истории продаж до {end_date.strftime('%Y-%m-%d')}...")
+            conn = get_connection()
+            date_str = end_date.strftime('%Y-%m-%d')
+            sql = f"EXEC SNS_ML_Get_Brand_Sales @StartDate = '{date_str}'"
+            df = pd.read_sql(sql, conn)
+            
+            if not df.empty:
+                df = self._prepare_sales_history(df)
+                self._sales_history_cache = df.copy()
+                self._reference_date = end_date
+                logger.info(f"Загружено {len(df)} записей истории продаж")
+            else:
+                logger.warning("История продаж пуста")
+                
+            return df
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении истории продаж: {e}")
+            return pd.DataFrame()
+        finally:
+            if conn:
+                conn.close()
+    
+    def clear_all_caches(self):
+        """Очищает все кэши данных."""
         self._brand_rules_cache = None
+        self._sales_history_cache = None
+        self._reference_date = None
     
     def _prepare_sales_history(self, df: pd.DataFrame) -> pd.DataFrame:
         """Приводит типы данных и подготавливает DataFrame истории продаж."""
@@ -123,67 +178,242 @@ class OrderRecommender:
             
         return df
     
-    def get_brand_sales_history(
-        self, 
-        end_date: datetime,
-        point_id: Optional[int] = None,
-        category_id: Optional[int] = None,
+    def generate_recommendations_batch(
+        self,
+        predictions_df: pd.DataFrame,
+        days_until_visit: int = 7,
+        reference_date: Optional[datetime] = None,
         force_refresh: bool = False
-    ) -> pd.DataFrame:
+    ) -> List[Tuple[int, int, float, pd.DataFrame]]:
         """
-        Получает историю продаж брендов через хранимую процедуру SNS_ML_Get_Brand_Sales.
+        Оптимизированная пакетная генерация рекомендаций для всех точек и категорий.
         
-        Процедура принимает @StartDate (дата начала периода),
-        возвращает продажи за 3 месяца до этой даты.
-        Данные кэшируются для комбинации (end_date, point_id, category_id) для избежания повторных обращений к БД.
+        За один раз загружает ВСЕ данные из БД и обрабатывает их векторизованно.
         
         Args:
-            end_date: Дата окончания периода продаж
-            point_id: ID точки для фильтрации (опционально)
-            category_id: ID категории для фильтрации (опционально)
-            force_refresh: Принудительное обновление кэша (по умолчанию False)
+            predictions_df: DataFrame с прогнозами (pointid, categoryid, forecast_amount)
+            days_until_visit: Дней до следующего визита
+            reference_date: Дата расчета (по умолчанию сегодня)
+            force_refresh: Принудительное обновление кэша данных
+            
+        Returns:
+            Список кортежей (point_id, category_id, forecast_amount, recommendation_df)
         """
-        # Формируем ключ кэша на основе параметров
-        cache_key = f"{end_date.strftime('%Y-%m-%d')}_{point_id}_{category_id}"
+        if reference_date is None:
+            reference_date = datetime.now().date()
         
-        # Проверяем кэш
-        if self._sales_history_cache is not None and self._cache_key == cache_key and not force_refresh:
-            return self._sales_history_cache.copy()
+        target_dow = reference_date.weekday()
+        logger.info(f"Пакетная генерация рекомендаций для {len(predictions_df)} пар точка-категория")
+        logger.info(f"Целевой день недели: {target_dow} ({['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][target_dow]})")
         
-        conn = None
-        try:
-            conn = get_connection()
-            date_str = end_date.strftime('%Y-%m-%d')
-            sql = f"EXEC SNS_ML_Get_Brand_Sales @StartDate = '{date_str}'"
-            df = pd.read_sql(sql, conn)
+        # 1. Загружаем ВСЕ правила брендов один раз
+        brand_rules = self.get_all_brand_rules(force_refresh=force_refresh)
+        if brand_rules.empty:
+            logger.error("Нет правил брендов")
+            return []
+        
+        # 2. Загружаем ВСЮ историю продаж один раз
+        sales_history = self.get_all_sales_history(reference_date, force_refresh=force_refresh)
+        
+        # Нормализуем имена колонок в predictions
+        pred_df = predictions_df.copy()
+        pred_df.columns = [col.lower() for col in pred_df.columns]
+        
+        # Находим колонку с суммой прогноза
+        value_col = None
+        for col in ['predicted_category_sum', 'sumroubles', 'forecast_amount', 'forecast']:
+            if col in pred_df.columns:
+                value_col = col
+                break
+        
+        if value_col is None and len(pred_df.columns) >= 3:
+            value_col = pred_df.columns[2]
+        
+        if value_col is None:
+            logger.error("Не найдена колонка с прогнозом суммы")
+            return []
+        
+        results = []
+        
+        # Группируем прогнозы по уникальным парам точка-категория
+        if 'pointid' not in pred_df.columns or 'categoryid' not in pred_df.columns:
+            logger.error("Отсутствуют колонки pointid/categoryid в прогнозах")
+            return []
+        
+        grouped = pred_df.groupby(['pointid', 'categoryid'], as_index=False)[value_col].mean()
+        if value_col != 'sumroubles':
+            grouped = grouped.rename(columns={value_col: 'sumroubles'})
+        
+        total_pairs = len(grouped)
+        logger.info(f"Обработка {total_pairs} уникальных пар точка-категория...")
+        
+        # Предварительно рассчитываем средние продажи по всем точкам/брендам/дням недели
+        if not sales_history.empty and 'brand' in sales_history.columns:
+            # Агрегируем продажи: точка x категория x бренд x день недели -> среднее количество
+            sales_agg = sales_history.groupby(
+                ['pointid', 'categoryid', 'brand', 'dayofweek'], 
+                as_index=False
+            )['brand_amount'].mean().rename(columns={'brand_amount': 'avg_sales'})
+        else:
+            sales_agg = pd.DataFrame()
+        
+        # Предварительно определяем топовые бренды по микрорегионам
+        if not sales_history.empty and 'microregionid' in sales_history.columns:
+            top_brands_by_region = self._calculate_top_brands_by_region(sales_history, target_dow)
+        else:
+            top_brands_by_region = {}
+        
+        # Обрабатываем каждую пару точка-категория
+        for idx, row in grouped.iterrows():
+            point_id = int(row['pointid'])
+            category_id = int(row['categoryid'])
+            forecast_amount = float(row['sumroubles'])
             
-            if not df.empty:
-                df = self._prepare_sales_history(df)
+            try:
+                # Фильтруем правила брендов для категории
+                cat_rules = brand_rules[brand_rules['categoryid'] == category_id].copy()
+                if cat_rules.empty:
+                    continue
                 
-                # Фильтрация перед сохранением в кэш для оптимизации памяти
-                if point_id is not None and 'pointid' in df.columns:
-                    df = df[df['pointid'] == point_id]
+                # Фильтруем продажи для точки и категории
+                if not sales_agg.empty:
+                    point_sales = sales_agg[
+                        (sales_agg['pointid'] == point_id) & 
+                        (sales_agg['categoryid'] == category_id) &
+                        (sales_agg['dayofweek'] == target_dow)
+                    ]
+                else:
+                    point_sales = pd.DataFrame()
                 
-                if category_id is not None and 'categoryid' in df.columns:
-                    df = df[df['categoryid'] == category_id]
+                # Получаем MicroRegionID для точки (если есть в истории)
+                microregion_id = None
+                if not sales_history.empty and 'microregionid' in sales_history.columns:
+                    point_regions = sales_history[sales_history['pointid'] == point_id]['microregionid'].dropna()
+                    if len(point_regions) > 0:
+                        microregion_id = point_regions.iloc[0]
                 
-                # Сохраняем в кэш отфильтрованные данные
-                self._sales_history_cache = df.copy()
-                self._cache_key = cache_key
+                # Векторизованный расчет для всех брендов категории
+                rec_df = self._calculate_brand_recommendations_vectorized(
+                    cat_rules, 
+                    point_sales, 
+                    days_until_visit,
+                    microregion_id,
+                    top_brands_by_region,
+                    target_dow
+                )
+                
+                if rec_df.empty:
+                    continue
+                
+                # Распределяем бюджет
+                final_df = self._distribute_forecast_budget(rec_df, forecast_amount)
+                included_df = final_df[final_df['included']].sort_values('priority', ascending=False)
+                
+                if not included_df.empty:
+                    results.append((point_id, category_id, forecast_amount, included_df))
+                
+                if (idx + 1) % 50 == 0:
+                    logger.info(f"Обработано {idx + 1}/{total_pairs} пар")
                     
-            return df
-            
-        except Exception as e:
-            logger.error(f"Ошибка при получении истории продаж: {e}")
-            return pd.DataFrame()
-        finally:
-            if conn:
-                conn.close()
+            except Exception as e:
+                logger.error(f"Ошибка при обработке точки {point_id}, категории {category_id}: {e}")
+                continue
+        
+        logger.info(f"Сгенерировано рекомендаций для {len(results)} пар точка-категория из {total_pairs}")
+        return results
     
-    def clear_sales_history_cache(self):
-        """Очищает кэш истории продаж."""
-        self._sales_history_cache = None
-        self._cache_key = None
+    def _calculate_top_brands_by_region(
+        self, 
+        sales_history: pd.DataFrame, 
+        target_dow: int,
+        top_percentile: float = 0.8
+    ) -> Dict[Tuple[int, int], set]:
+        """
+        Рассчитывает топовые бренды для каждого микрорегиона и категории.
+        
+        Returns:
+            Dict[(microregion_id, category_id), set of top brand_ids]
+        """
+        if sales_history.empty or 'microregionid' not in sales_history.columns:
+            return {}
+        
+        filtered = sales_history[sales_history['dayofweek'] == target_dow]
+        if filtered.empty:
+            return {}
+        
+        # Группируем по микрорегиону x категория x бренд
+        brand_sales = filtered.groupby(
+            ['microregionid', 'categoryid', 'brand']
+        )['brand_amount'].sum().reset_index()
+        
+        top_brands = {}
+        for (region, category), group in brand_sales.groupby(['microregionid', 'categoryid']):
+            max_sales = group['brand_amount'].max()
+            if max_sales > 0:
+                threshold = max_sales * top_percentile
+                top_in_group = group[group['brand_amount'] >= threshold]['brand'].tolist()
+                top_brands[(region, category)] = set(top_in_group)
+        
+        return top_brands
+    
+    def _calculate_brand_recommendations_vectorized(
+        self,
+        cat_rules: pd.DataFrame,
+        point_sales: pd.DataFrame,
+        days_until_visit: int,
+        microregion_id: Optional[int],
+        top_brands_by_region: Dict[Tuple[int, int], set],
+        target_dow: int
+    ) -> pd.DataFrame:
+        """
+        Векторизованный расчет рекомендаций для всех брендов категории.
+        """
+        if cat_rules.empty:
+            return pd.DataFrame()
+        
+        # Merge с продажами для получения avg_sales
+        df = cat_rules.merge(
+            point_sales[['brand', 'avg_sales']], 
+            on='brand', 
+            how='left'
+        )
+        
+        # Заполняем нулями отсутствующие продажи
+        df['avg_sales'] = df['avg_sales'].fillna(0.0)
+        
+        # Расчет raw потребности
+        df['raw_need'] = df['avg_sales'] * days_until_visit
+        
+        # Округление до кванта (векторизованно)
+        df['recommended_qty'] = np.ceil(df['raw_need'] / df['brandquantum']).astype(int) * df['brandquantum']
+        df.loc[df['raw_need'] <= 0, 'recommended_qty'] = 0
+        
+        # Расчет стоимости
+        df['estimated_cost'] = df['recommended_qty'] * df['avg_price']
+        
+        # Расчет приоритета
+        df['priority'] = 1 + df['priorityweight']
+        df.loc[df['isturbobrand'] == 1, 'priority'] += 5
+        
+        # Проверка на топ в микрорегионе
+        if microregion_id is not None:
+            top_brands_set = top_brands_by_region.get((microregion_id, cat_rules['categoryid'].iloc[0]), set())
+            df['is_top_local'] = df['brand'].isin(top_brands_set)
+            df.loc[df['is_top_local'], 'priority'] += 2
+        else:
+            df['is_top_local'] = False
+        
+        # Дополнительные поля
+        df['brand_id'] = df['brand']
+        df['brand_name'] = df.get('brand_name', df['brand'].astype(str))
+        df['is_turbo'] = df['isturbobrand']
+        df['importance_label'] = df.get('importancelabel', '')
+        df['days_until_visit'] = days_until_visit
+        df['quantum'] = df['brandquantum']
+        df['avg_daily_sales'] = df['avg_sales'].round(2)
+        df['avg_price'] = df['avgprice']
+        
+        return df
     
     def _calculate_brand_priority(self, brand_row: pd.Series, is_top_in_microregion: bool = False) -> int:
         """Рассчитывает приоритет бренда по формуле."""
@@ -396,56 +626,105 @@ class OrderRecommender:
     
     def clear_all_caches(self):
         """Очищает все кэши данных."""
-        self.clear_brand_rules_cache()
-        self.clear_sales_history_cache()
+        self._brand_rules_cache = None
+        self._sales_history_cache = None
+        self._reference_date = None
+    
+    # =====================================================================
+    # СТАРЫЕ МЕТОДЫ (для обратной совместимости, не используются в новой версии)
+    # =====================================================================
+    
+    def get_brand_rules(self, category_id: Optional[int] = None, force_refresh: bool = False) -> pd.DataFrame:
+        """Устаревший метод. Используйте get_all_brand_rules()."""
+        df = self.get_all_brand_rules(force_refresh=force_refresh)
+        if category_id is not None and 'categoryid' in df.columns:
+            return df[df['categoryid'] == category_id]
+        return df
+    
+    def get_brand_sales_history(
+        self, 
+        end_date: datetime,
+        point_id: Optional[int] = None,
+        category_id: Optional[int] = None,
+        force_refresh: bool = False
+    ) -> pd.DataFrame:
+        """Устаревший метод. Используйте get_all_sales_history()."""
+        df = self.get_all_sales_history(end_date, force_refresh=force_refresh)
+        
+        if point_id is not None and 'pointid' in df.columns:
+            df = df[df['pointid'] == point_id]
+        
+        if category_id is not None and 'categoryid' in df.columns:
+            df = df[df['categoryid'] == category_id]
+            
+        return df
+    
+    def clear_brand_rules_cache(self):
+        """Устаревший метод. Используйте clear_all_caches()."""
+        self._brand_rules_cache = None
+    
+    def clear_sales_history_cache(self):
+        """Устаревший метод. Используйте clear_all_caches()."""
+        self._sales_history_cache = None
+        self._reference_date = None
 
 
 if __name__ == "__main__":
-    print("Запуск теста генерации заказа...")
+    print("=" * 80)
+    print("ТЕСТ ПАКЕТНОЙ ГЕНЕРАЦИИ РЕКОМЕНДАЦИЙ")
+    print("=" * 80)
     
     recommender = OrderRecommender()
     
-    TEST_POINT_ID = 12345
-    TEST_CATEGORY_ID = 101
-    TEST_FORECAST_AMOUNT = 50000.0
-    TEST_DAYS_UNTIL_VISIT = 7
+    # Создаем тестовые данные прогнозов
+    test_predictions = pd.DataFrame({
+        'pointid': [12345, 12345, 67890, 67890],
+        'categoryid': [101, 102, 101, 102],
+        'sumroubles': [50000.0, 30000.0, 45000.0, 35000.0]
+    })
     
     try:
-        recommendation = recommender.generate_recommendation(
-            point_id=TEST_POINT_ID,
-            category_id=TEST_CATEGORY_ID,
-            forecast_amount=TEST_FORECAST_AMOUNT,
-            days_until_visit=TEST_DAYS_UNTIL_VISIT
+        print(f"\nТестовые прогнозы для {len(test_predictions)} пар точка-категория:")
+        print(test_predictions.to_string())
+        
+        # Тестируем пакетную генерацию
+        recommendations = recommender.generate_recommendations_batch(
+            predictions_df=test_predictions,
+            days_until_visit=7,
+            force_refresh=True
         )
         
-        if not recommendation.empty:
-            print(f"\nСформировано {len(recommendation)} позиций заказа:")
-            print(recommendation[[
-                'brand_id', 'brand_name', 'priority', 'recommended_qty', 
-                'avg_price', 'estimated_cost'
-            ]].to_string())
+        if recommendations:
+            print(f"\n✓ Сгенерировано рекомендаций для {len(recommendations)} пар точка-категория:")
             
-            total_cost = recommendation['estimated_cost'].sum()
-            print(f"\nИтого сумма заказа: {total_cost:.2f} руб.")
-            print(f"Прогноз категории: {TEST_FORECAST_AMOUNT:.2f} руб.")
-            print(f"Утилизация бюджета: {(total_cost/TEST_FORECAST_AMOUNT)*100:.1f}%")
+            total_brands = 0
+            total_cost = 0.0
             
-            # Пример сохранения в БД (раскомментировать при необходимости)
-            # from save_recommendation import RecommendationStorage
-            # from datetime import datetime
-            # storage = RecommendationStorage()
-            # saved_count = storage.save_recommendation(
-            #     recommendation_df=recommendation,
-            #     point_id=TEST_POINT_ID,
-            #     category_id=TEST_CATEGORY_ID,
-            #     forecast_amount=TEST_FORECAST_AMOUNT,
-            #     days_until_visit=TEST_DAYS_UNTIL_VISIT,
-            #     reference_date=datetime.now(),
-            #     model_version="v1.0.0"
-            # )
-            # print(f"\nСохранено {saved_count} записей в таблицу SNS_ML_Brand_Recommendations")
+            for point_id, category_id, forecast, rec_df in recommendations:
+                n_brands = len(rec_df)
+                cost = rec_df['estimated_cost'].sum()
+                total_brands += n_brands
+                total_cost += cost
+                
+                print(f"\n  Точка {point_id}, Категория {category_id}:")
+                print(f"    Прогноз: {forecast:,.2f} руб.")
+                print(f"    Рекомендовано брендов: {n_brands}")
+                print(f"    Сумма заказа: {cost:,.2f} руб.")
+                
+                if n_brands > 0:
+                    top3 = rec_df.head(3)
+                    print(f"    Топ-3 бренда:")
+                    for _, row in top3.iterrows():
+                        print(f"      - {row.get('brand_name', row['brand_id'])}: {row['recommended_qty']} шт. ({row['estimated_cost']:,.2f} руб.)")
+            
+            print(f"\n{'=' * 80}")
+            print(f"ИТОГО:")
+            print(f"  Пар точка-категория: {len(recommendations)}")
+            print(f"  Всего рекомендованных позиций: {total_brands}")
+            print(f"  Общая сумма заказов: {total_cost:,.2f} руб.")
+            print(f"{'=' * 80}")
         else:
-            print("Рекомендаций не сформировано.")
+            print("\n⚠ Рекомендации не сформированы (возможно, нет данных в БД)")
             
     except Exception as e:
         logger.error(f"Критическая ошибка: {e}")
