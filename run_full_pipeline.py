@@ -113,7 +113,16 @@ def load_predictions_from_db(
     try:
         conn = get_connection()
         
-        query = "SELECT * FROM dbo.SNS_ML_Predictions WHERE 1=1"
+        query = """
+            SELECT 
+                PointID,
+                CategoryID,
+                Predicted_Category_Sum,
+                Days_Until_Next_Visit,
+                VisitDate
+            FROM dbo.SNS_ML_Predictions 
+            WHERE 1=1
+        """
         params = []
         
         if point_id is not None:
@@ -204,12 +213,15 @@ def save_all_recommendations(
     
     for idx, (point_id, category_id, forecast_amount, rec_df) in enumerate(recommendations):
         try:
+            # Берем days_until_visit из первой строки recommendation DataFrame
+            actual_days_until = int(rec_df['days_until_visit'].iloc[0]) if 'days_until_visit' in rec_df.columns and len(rec_df) > 0 else 7
+            
             saved_count = storage.save_recommendation(
                 recommendation_df=rec_df,
                 point_id=point_id,
                 category_id=category_id,
                 forecast_amount=forecast_amount,
-                days_until_visit=7,  # Можно вынести в параметр
+                days_until_visit=actual_days_until,
                 reference_date=reference_date,
                 model_version=model_version
             )

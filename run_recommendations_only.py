@@ -183,12 +183,19 @@ def save_all_recommendations(
     
     for idx, (point_id, category_id, forecast_amount, rec_df) in enumerate(recommendations):
         try:
+            # Получаем days_until_visit из первой строки recommendation DataFrame
+            # Если колонка существует, используем её, иначе fallback на 7
+            if 'days_until_visit' in rec_df.columns and len(rec_df) > 0:
+                save_days_until_visit = int(rec_df['days_until_visit'].iloc[0])
+            else:
+                save_days_until_visit = 7
+            
             saved_count = storage.save_recommendation(
                 recommendation_df=rec_df,
                 point_id=point_id,
                 category_id=category_id,
                 forecast_amount=forecast_amount,
-                days_until_visit=7,  # Можно вынести в параметр
+                days_until_visit=save_days_until_visit,
                 reference_date=reference_date,
                 model_version=model_version
             )
