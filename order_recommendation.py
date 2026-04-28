@@ -193,6 +193,8 @@ class OrderRecommender:
         # Нормализуем имена колонок в нижний регистр
         df.columns = [col.lower() for col in df.columns]
         
+        logger.info(f"Колонки в истории продаж после нормализации: {list(df.columns)}")
+        
         # Явно переименовываем возможные вариации имен колонок
         rename_map = {}
         for col in df.columns:
@@ -204,9 +206,15 @@ class OrderRecommender:
                 rename_map[col] = 'brand_amount'
             elif col in ['microregionid', 'micro_region_id', 'microregion']:
                 rename_map[col] = 'microregionid'
+            elif col in ['visitdate', 'visit_date']:
+                rename_map[col] = 'visitdate'
+            elif col in ['brand', 'brandid', 'brand_id']:
+                rename_map[col] = 'brand'
         
         if rename_map:
             df = df.rename(columns=rename_map)
+        
+        logger.info(f"Колонки после переименования: {list(df.columns)}")
         
         if 'visitdate' in df.columns:
             df['visitdate'] = pd.to_datetime(df['visitdate'])
