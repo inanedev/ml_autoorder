@@ -74,7 +74,7 @@ class OrderRecommender:
                 rename_map[col] = 'priorityweight'
             elif col in ['isturbobrand', 'is_turbo_brand', 'turbo']:
                 rename_map[col] = 'isturbobrand'
-            elif col in ['avgprice', 'avg_price', 'price']:
+            elif col in ['avgprice', 'avg_price', 'price', 'avgprice']:
                 rename_map[col] = 'avgprice'
             elif col in ['importancelabel', 'importance_label']:
                 rename_map[col] = 'importancelabel'
@@ -437,7 +437,7 @@ class OrderRecommender:
         df.loc[df['raw_need'] <= 0, 'recommended_qty'] = 0
         
         # Расчет стоимости
-        df['estimated_cost'] = df['recommended_qty'] * df['avg_price']
+        df['estimated_cost'] = df['recommended_qty'] * df['avgprice']
         
         # Расчет приоритета
         df['priority'] = 1 + df['priorityweight']
@@ -548,7 +548,7 @@ class OrderRecommender:
             
         df = candidates.sort_values('priority', ascending=False).copy()
         df['included'] = False
-        df['final_cost'] = df['recommended_qty'] * df['avg_price']
+        df['final_cost'] = df['recommended_qty'] * df['avgprice']
         
         remaining_budget = total_budget
         
@@ -661,7 +661,7 @@ class OrderRecommender:
                 'raw_need': round(avg_sales * days_until_visit, 2),
                 'quantum': quantum,
                 'recommended_qty': rec_qty,
-                'avg_price': price,
+                'avgprice': price,
                 'estimated_cost': round(est_cost, 2)
             })
             
