@@ -38,16 +38,50 @@ class OrderRecommender:
     """Класс для формирования рекомендаций заказа на основе прогноза и правил брендов."""
     
     def __init__(self):
-        """Инициализация рекомендателя."""
-        pass
+        """Инициализация рекомендателя с кэшированием данных."""
+        self._brand_rules_cache: Optional[pd.DataFrame] = None
+        self._sales_history_cache: Optional[pd.DataFrame] = None
+        self._cache_key: Optional[str] = None
     
-    def get_brand_rules(self, category_id: Optional[int] = None) -> pd.DataFrame:
+    def _prepare_brand_rules(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Приводит типы данных и подготавливает DataFrame правил брендов."""
+        if df.empty:
+            return df
+            
+        df.columns = [col.lower() for col in df.columns]
+        
+        if 'brandquantum' in df.columns:
+            df['brandquantum'] = df['brandquantum'].fillna(1).astype(int)
+        if 'priorityweight' in df.columns:
+            df['priorityweight'] = df['priorityweight'].fillna(0).astype(int)
+        if 'isturbobrand' in df.columns:
+            df['isturbobrand'] = df['isturbobrand'].apply(
+                lambda x: 1 if str(x).lower() in ['да', 'true', '1', 'yes'] else 0
+            )
+        if 'avgprice' in df.columns:
+            df['avgprice'] = df['avgprice'].fillna(0.0).astype(float)
+            
+        return df
+    
+    def get_brand_rules(self, category_id: Optional[int] = None, force_refresh: bool = False) -> pd.DataFrame:
         """
         Получает правила брендов через хранимую процедуру SNS_ML_Get_Brand_Rules.
         
         Процедура не принимает параметров, возвращает все бренды.
         Если указан category_id, фильтруем результат в Python.
+        Данные кэшируются после первого запроса для избежания повторных обращений к БД.
+        
+        Args:
+            category_id: ID категории для фильтрации (опционально)
+            force_refresh: Принудительное обновление кэша (по умолчанию False)
         """
+        # Проверяем кэш
+        if self._brand_rules_cache is not None and not force_refresh:
+            df = self._brand_rules_cache.copy()
+            if category_id is not None and 'categoryid' in df.columns:
+                df = df[df['categoryid'] == category_id]
+            return df
+        
         conn = None
         try:
             conn = get_connection()
@@ -55,18 +89,10 @@ class OrderRecommender:
             df = pd.read_sql(sql, conn)
             
             if not df.empty:
-                df.columns = [col.lower() for col in df.columns]
+                df = self._prepare_brand_rules(df)
                 
-                if 'brandquantum' in df.columns:
-                    df['brandquantum'] = df['brandquantum'].fillna(1).astype(int)
-                if 'priorityweight' in df.columns:
-                    df['priorityweight'] = df['priorityweight'].fillna(0).astype(int)
-                if 'isturbobrand' in df.columns:
-                    df['isturbobrand'] = df['isturbobrand'].apply(
-                        lambda x: 1 if str(x).lower() in ['да', 'true', '1', 'yes'] else 0
-                    )
-                if 'avgprice' in df.columns:
-                    df['avgprice'] = df['avgprice'].fillna(0.0).astype(float)
+                # Сохраняем в кэш полный набор данных
+                self._brand_rules_cache = df.copy()
                 
                 if category_id is not None and 'categoryid' in df.columns:
                     df = df[df['categoryid'] == category_id]
@@ -80,18 +106,50 @@ class OrderRecommender:
             if conn:
                 conn.close()
     
+    def clear_brand_rules_cache(self):
+        """Очищает кэш правил брендов."""
+        self._brand_rules_cache = None
+    
+    def _prepare_sales_history(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Приводит типы данных и подготавливает DataFrame истории продаж."""
+        if df.empty:
+            return df
+            
+        df.columns = [col.lower() for col in df.columns]
+        
+        if 'visitdate' in df.columns:
+            df['visitdate'] = pd.to_datetime(df['visitdate'])
+            df['dayofweek'] = df['visitdate'].dt.dayofweek
+            
+        return df
+    
     def get_brand_sales_history(
         self, 
         end_date: datetime,
         point_id: Optional[int] = None,
-        category_id: Optional[int] = None
+        category_id: Optional[int] = None,
+        force_refresh: bool = False
     ) -> pd.DataFrame:
         """
         Получает историю продаж брендов через хранимую процедуру SNS_ML_Get_Brand_Sales.
         
         Процедура принимает @StartDate (дата начала периода),
         возвращает продажи за 3 месяца до этой даты.
+        Данные кэшируются для комбинации (end_date, point_id, category_id) для избежания повторных обращений к БД.
+        
+        Args:
+            end_date: Дата окончания периода продаж
+            point_id: ID точки для фильтрации (опционально)
+            category_id: ID категории для фильтрации (опционально)
+            force_refresh: Принудительное обновление кэша (по умолчанию False)
         """
+        # Формируем ключ кэша на основе параметров
+        cache_key = f"{end_date.strftime('%Y-%m-%d')}_{point_id}_{category_id}"
+        
+        # Проверяем кэш
+        if self._sales_history_cache is not None and self._cache_key == cache_key and not force_refresh:
+            return self._sales_history_cache.copy()
+        
         conn = None
         try:
             conn = get_connection()
@@ -100,17 +158,18 @@ class OrderRecommender:
             df = pd.read_sql(sql, conn)
             
             if not df.empty:
-                df.columns = [col.lower() for col in df.columns]
+                df = self._prepare_sales_history(df)
                 
-                if 'visitdate' in df.columns:
-                    df['visitdate'] = pd.to_datetime(df['visitdate'])
-                    df['dayofweek'] = df['visitdate'].dt.dayofweek
-                
+                # Фильтрация перед сохранением в кэш для оптимизации памяти
                 if point_id is not None and 'pointid' in df.columns:
                     df = df[df['pointid'] == point_id]
                 
                 if category_id is not None and 'categoryid' in df.columns:
                     df = df[df['categoryid'] == category_id]
+                
+                # Сохраняем в кэш отфильтрованные данные
+                self._sales_history_cache = df.copy()
+                self._cache_key = cache_key
                     
             return df
             
@@ -120,6 +179,11 @@ class OrderRecommender:
         finally:
             if conn:
                 conn.close()
+    
+    def clear_sales_history_cache(self):
+        """Очищает кэш истории продаж."""
+        self._sales_history_cache = None
+        self._cache_key = None
     
     def _calculate_brand_priority(self, brand_row: pd.Series, is_top_in_microregion: bool = False) -> int:
         """Рассчитывает приоритет бренда по формуле."""
@@ -238,7 +302,8 @@ class OrderRecommender:
         category_id: int,
         forecast_amount: float,
         days_until_visit: int,
-        reference_date: Optional[datetime] = None
+        reference_date: Optional[datetime] = None,
+        use_cache: bool = True
     ) -> pd.DataFrame:
         """
         Полный цикл формирования рекомендации заказа.
@@ -249,6 +314,7 @@ class OrderRecommender:
             forecast_amount: Прогноз суммы продаж категории (от ML модели)
             days_until_visit: Дней до следующего визита мерчандайзера
             reference_date: Дата расчета (по умолчанию сегодня)
+            use_cache: Использовать кэширование данных (по умолчанию True)
             
         Returns:
             DataFrame с рекомендованным заказом
@@ -258,17 +324,21 @@ class OrderRecommender:
             
         target_dow = reference_date.weekday()
         
-        # 1. Получаем правила брендов для категории
-        brand_rules = self.get_brand_rules(category_id)
+        # 1. Получаем правила брендов для категории (с кэшированием)
+        brand_rules = self.get_brand_rules(
+            category_id=category_id, 
+            force_refresh=not use_cache
+        )
         if brand_rules.empty:
             logger.warning(f"Нет правил брендов для категории {category_id}")
             return pd.DataFrame()
             
-        # 2. Получаем историю продаж точки
+        # 2. Получаем историю продаж точки (с кэшированием)
         sales_history = self.get_brand_sales_history(
             end_date=reference_date,
             point_id=point_id,
-            category_id=category_id
+            category_id=category_id,
+            force_refresh=not use_cache
         )
         
         if sales_history.empty:
@@ -323,6 +393,11 @@ class OrderRecommender:
         final_df = self._distribute_forecast_budget(df_results, forecast_amount)
         
         return final_df[final_df['included']].sort_values('priority', ascending=False)
+    
+    def clear_all_caches(self):
+        """Очищает все кэши данных."""
+        self.clear_brand_rules_cache()
+        self.clear_sales_history_cache()
 
 
 if __name__ == "__main__":
