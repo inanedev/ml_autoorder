@@ -449,7 +449,8 @@ class OrderRecommender:
         
         # Дополнительные поля
         df['brand_id'] = df['brand']
-        df['brand_name'] = df.get('brand_name', df['brand'].astype(str))
+        if 'brand_name' not in df.columns:
+            df['brand_name'] = df['brand'].astype(str)
         df['is_turbo'] = df['isturbobrand']
         df['importance_label'] = df.get('importancelabel', '')
         df['days_until_visit'] = days_until_visit
