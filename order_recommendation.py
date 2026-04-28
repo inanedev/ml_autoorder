@@ -362,8 +362,10 @@ class OrderRecommender:
                         if not point_sales.empty:
                             # Переименовываем колонку для совместимости
                             point_sales = point_sales.rename(columns={'avg_sales_all_days': 'avg_sales'})
-                else:
-                    point_sales = pd.DataFrame()
+                
+                # Если point_sales всё ещё пустой или не содержит нужных колонок, создаем заглушку
+                if point_sales.empty or 'avg_sales' not in point_sales.columns:
+                    point_sales = pd.DataFrame(columns=['brand', 'avg_sales'])
                 
                 # Получаем MicroRegionID для точки (если есть в истории)
                 microregion_id = None
