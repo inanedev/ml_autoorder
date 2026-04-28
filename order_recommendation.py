@@ -66,6 +66,8 @@ class OrderRecommender:
                 rename_map[col] = 'categoryid'
             elif col in ['brandid', 'brand_id', 'brand']:
                 rename_map[col] = 'brand'
+            elif col in ['groupid', 'group_id']:
+                rename_map[col] = 'brand'
             elif col in ['brandquantum', 'brand_quantum', 'quantum']:
                 rename_map[col] = 'brandquantum'
             elif col in ['priorityweight', 'priority_weight', 'weight']:
@@ -74,6 +76,8 @@ class OrderRecommender:
                 rename_map[col] = 'isturbobrand'
             elif col in ['avgprice', 'avg_price', 'price']:
                 rename_map[col] = 'avgprice'
+            elif col in ['importancelabel', 'importance_label']:
+                rename_map[col] = 'importancelabel'
         
         if rename_map:
             df = df.rename(columns=rename_map)
@@ -628,7 +632,7 @@ class OrderRecommender:
         
         # 4. Расчет по каждому бренду
         for _, brand in brand_rules.iterrows():
-            brand_id = brand.get('groupid')
+            brand_id = brand.get('brand')
             if brand_id is None:
                 continue
                 
