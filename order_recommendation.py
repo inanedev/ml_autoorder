@@ -198,7 +198,7 @@ class OrderRecommender:
         # Явно переименовываем возможные вариации имен колонок
         rename_map = {}
         for col in df.columns:
-            if col in ['pointid', 'point_id', 'point']:
+            if col in ['pointid', 'point_id', 'point', 'mfid']:
                 rename_map[col] = 'pointid'
             elif col in ['categoryid', 'category_id', 'category']:
                 rename_map[col] = 'categoryid'
