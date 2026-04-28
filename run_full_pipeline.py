@@ -152,6 +152,8 @@ def generate_brand_recommendations(
     """
     Генерирует рекомендации по брендам для всех точек и категорий из предсказаний.
     
+    Использует оптимизированный пакетный метод generate_recommendations_batch().
+    
     Args:
         predictions_df: DataFrame с предсказаниями сумм
         days_until_visit: Дней до следующего визита
@@ -164,88 +166,16 @@ def generate_brand_recommendations(
         reference_date = datetime.now().date()
     
     recommender = OrderRecommender()
-    results = []
     
-    # Группируем по точкам и категориям
-    if 'pointid' in predictions_df.columns and 'categoryid' in predictions_df.columns:
-        group_cols = ['pointid', 'categoryid']
-    else:
-        logger.error("Отсутствуют обязательные колонки pointid/categoryid в предсказаниях")
-        logger.info(f"Фактические колонки: {list(predictions_df.columns)}")
-        return results
+    logger.info(f"Генерация рекомендаций для {len(predictions_df)} записей прогнозов...")
     
-    # Получаем имя колонки с суммами (предсказанная сумма)
-    possible_value_cols = ['predicted_category_sum', 'sumroubles', 'forecast_amount']
-    value_col = None
-    for col in possible_value_cols:
-        if col in predictions_df.columns:
-            value_col = col
-            break
-    
-    if value_col is None:
-        # Если ни одна из известных колонок не найдена, берем третью колонку
-        if len(predictions_df.columns) >= 3:
-            value_col = predictions_df.columns[2]
-        else:
-            logger.error("Не найдена колонка с суммами предсказаний")
-            return results
-    
-    # Группируем и агрегируем, используя as_index=False чтобы сохранить группирующие колонки
-    grouped = predictions_df.groupby(group_cols, as_index=False)[value_col].mean()
-    
-    # Переименовываем колонку с суммой в 'sumroubles' для единообразия
-    if value_col != 'sumroubles':
-        grouped = grouped.rename(columns={value_col: 'sumroubles'})
-    
-    # Явно убеждаемся, что колонки имеют правильные имена
-    expected_cols = ['pointid', 'categoryid', 'sumroubles']
-    if list(grouped.columns) != expected_cols:
-        logger.warning(f"Ожидаемые колонки: {expected_cols}, фактические: {list(grouped.columns)}")
-        # Пробуем найти колонки в любом регистре
-        col_mapping = {}
-        for col in grouped.columns:
-            col_lower = col.lower()
-            if col_lower == 'pointid':
-                col_mapping[col] = 'pointid'
-            elif col_lower == 'categoryid':
-                col_mapping[col] = 'categoryid'
-            elif col_lower == 'sumroubles':
-                col_mapping[col] = 'sumroubles'
-        if col_mapping:
-            grouped = grouped.rename(columns=col_mapping)
-            logger.info(f"Колонки переименованы: {col_mapping}")
-    
-    # Проверяем, что categoryid действительно присутствует после всех преобразований
-    if 'categoryid' not in grouped.columns:
-        logger.error(f"Колонка 'categoryid' отсутствует после группировки. Колонки: {list(grouped.columns)}")
-        return results
-    
-    logger.info(f"Генерация рекомендаций для {len(grouped)} пар точка-категория...")
-    logger.info(f"Колонки в grouped: {list(grouped.columns)}")
-    
-    for idx, row in grouped.iterrows():
-        point_id = int(row['pointid'])
-        category_id = int(row['categoryid'])
-        forecast_amount = float(row['sumroubles'])
-        
-        try:
-            recommendation = recommender.generate_recommendation(
-                point_id=point_id,
-                category_id=category_id,
-                forecast_amount=forecast_amount,
-                days_until_visit=days_until_visit,
-                reference_date=reference_date
-            )
-            
-            if not recommendation.empty:
-                results.append((point_id, category_id, forecast_amount, recommendation))
-                
-                if (idx + 1) % 10 == 0:
-                    logger.info(f"Обработано {idx + 1}/{len(grouped)} пар точка-категория")
-                    
-        except Exception as e:
-            logger.error(f"Ошибка при генерации рекомендации для точки {point_id}, категории {category_id}: {e}")
-            continue
+    # Используем новый оптимизированный пакетный метод
+    results = recommender.generate_recommendations_batch(
+        predictions_df=predictions_df,
+        days_until_visit=days_until_visit,
+        reference_date=reference_date,
+        force_refresh=True
+    )
     
     logger.info(f"Сгенерировано рекомендаций для {len(results)} пар точка-категория")
     return results
