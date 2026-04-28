@@ -229,7 +229,7 @@ class OrderRecommender:
     def generate_recommendations_batch(
         self,
         predictions_df: pd.DataFrame,
-        days_until_visit: int = 7,
+        days_until_visit: Optional[int] = None,
         reference_date: Optional[datetime] = None,
         force_refresh: bool = False
     ) -> List[Tuple[int, int, float, pd.DataFrame]]:
@@ -239,8 +239,8 @@ class OrderRecommender:
         За один раз загружает ВСЕ данные из БД и обрабатывает их векторизованно.
         
         Args:
-            predictions_df: DataFrame с прогнозами (pointid, categoryid, forecast_amount)
-            days_until_visit: Дней до следующего визита
+            predictions_df: DataFrame с прогнозами (pointid, categoryid, forecast_amount, days_until_next_visit)
+            days_until_visit: Дней до следующего визита (резервное значение, если нет в predictions_df)
             reference_date: Дата расчета (по умолчанию сегодня)
             force_refresh: Принудительное обновление кэша данных
             
@@ -288,7 +288,16 @@ class OrderRecommender:
             logger.error("Отсутствуют колонки pointid/categoryid в прогнозах")
             return []
         
+        # Проверяем наличие колонки с днями до следующего визита
+        has_days_until_col = 'days_until_next_visit' in pred_df.columns
+        
         grouped = pred_df.groupby(['pointid', 'categoryid'], as_index=False)[value_col].mean()
+        
+        # Если есть колонка days_until_next_visit, добавляем её в группировку
+        if has_days_until_col:
+            grouped_days = pred_df.groupby(['pointid', 'categoryid'], as_index=False)['days_until_next_visit'].first()
+            grouped = grouped.merge(grouped_days, on=['pointid', 'categoryid'], how='left')
+        
         if value_col != 'sumroubles':
             grouped = grouped.rename(columns={value_col: 'sumroubles'})
         
@@ -302,8 +311,15 @@ class OrderRecommender:
                 ['pointid', 'categoryid', 'brand', 'dayofweek'], 
                 as_index=False
             )['brand_amount'].mean().rename(columns={'brand_amount': 'avg_sales'})
+            
+            # Также считаем средние продажи по всем дням недели (для fallback)
+            sales_agg_all_days = sales_history.groupby(
+                ['pointid', 'categoryid', 'brand'], 
+                as_index=False
+            )['brand_amount'].mean().rename(columns={'brand_amount': 'avg_sales_all_days'})
         else:
             sales_agg = pd.DataFrame()
+            sales_agg_all_days = pd.DataFrame()
         
         # Предварительно определяем топовые бренды по микрорегионам
         if not sales_history.empty and 'microregionid' in sales_history.columns:
@@ -317,19 +333,35 @@ class OrderRecommender:
             category_id = int(row['categoryid'])
             forecast_amount = float(row['sumroubles'])
             
+            # Определяем days_until_visit: из predictions_df или используем резервное значение
+            if has_days_until_col and 'days_until_next_visit' in row:
+                current_days_until = int(row['days_until_next_visit']) if pd.notna(row['days_until_next_visit']) else (days_until_visit or 7)
+            else:
+                current_days_until = days_until_visit or 7
+            
             try:
                 # Фильтруем правила брендов для категории
                 cat_rules = brand_rules[brand_rules['categoryid'] == category_id].copy()
                 if cat_rules.empty:
                     continue
                 
-                # Фильтруем продажи для точки и категории
+                # Фильтруем продажи для точки и категории по целевому дню недели
                 if not sales_agg.empty:
                     point_sales = sales_agg[
                         (sales_agg['pointid'] == point_id) & 
                         (sales_agg['categoryid'] == category_id) &
                         (sales_agg['dayofweek'] == target_dow)
                     ]
+                    
+                    # Если нет продаж для конкретного дня недели, используем средние по всем дням
+                    if point_sales.empty and not sales_agg_all_days.empty:
+                        point_sales = sales_agg_all_days[
+                            (sales_agg_all_days['pointid'] == point_id) & 
+                            (sales_agg_all_days['categoryid'] == category_id)
+                        ].copy()
+                        if not point_sales.empty:
+                            # Переименовываем колонку для совместимости
+                            point_sales = point_sales.rename(columns={'avg_sales_all_days': 'avg_sales'})
                 else:
                     point_sales = pd.DataFrame()
                 
@@ -344,7 +376,7 @@ class OrderRecommender:
                 rec_df = self._calculate_brand_recommendations_vectorized(
                     cat_rules, 
                     point_sales, 
-                    days_until_visit,
+                    current_days_until,
                     microregion_id,
                     top_brands_by_region,
                     target_dow
@@ -433,8 +465,9 @@ class OrderRecommender:
         df['raw_need'] = df['avg_sales'] * days_until_visit
         
         # Округление до кванта (векторизованно)
-        df['recommended_qty'] = np.ceil(df['raw_need'] / df['brandquantum']).astype(int) * df['brandquantum']
-        df.loc[df['raw_need'] <= 0, 'recommended_qty'] = 0
+        # Используем fillna(0) перед astype(int) для обработки NaN значений
+        df['recommended_qty'] = np.ceil(df['raw_need'].fillna(0) / df['brandquantum']).astype(int) * df['brandquantum']
+        df.loc[(df['raw_need'].isna()) | (df['raw_need'] <= 0), 'recommended_qty'] = 0
         
         # Расчет стоимости
         df['estimated_cost'] = df['recommended_qty'] * df['avgprice']
