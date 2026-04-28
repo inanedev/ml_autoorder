@@ -56,7 +56,27 @@ class OrderRecommender:
         if df.empty:
             return df
             
+        # Нормализуем имена колонок в нижний регистр
         df.columns = [col.lower() for col in df.columns]
+        
+        # Явно переименовываем возможные вариации имен колонок
+        rename_map = {}
+        for col in df.columns:
+            if col in ['categoryid', 'category_id', 'category']:
+                rename_map[col] = 'categoryid'
+            elif col in ['brandid', 'brand_id', 'brand']:
+                rename_map[col] = 'brand'
+            elif col in ['brandquantum', 'brand_quantum', 'quantum']:
+                rename_map[col] = 'brandquantum'
+            elif col in ['priorityweight', 'priority_weight', 'weight']:
+                rename_map[col] = 'priorityweight'
+            elif col in ['isturbobrand', 'is_turbo_brand', 'turbo']:
+                rename_map[col] = 'isturbobrand'
+            elif col in ['avgprice', 'avg_price', 'price']:
+                rename_map[col] = 'avgprice'
+        
+        if rename_map:
+            df = df.rename(columns=rename_map)
         
         if 'brandquantum' in df.columns:
             df['brandquantum'] = df['brandquantum'].fillna(1).astype(int)
@@ -170,7 +190,23 @@ class OrderRecommender:
         if df.empty:
             return df
             
+        # Нормализуем имена колонок в нижний регистр
         df.columns = [col.lower() for col in df.columns]
+        
+        # Явно переименовываем возможные вариации имен колонок
+        rename_map = {}
+        for col in df.columns:
+            if col in ['pointid', 'point_id', 'point']:
+                rename_map[col] = 'pointid'
+            elif col in ['categoryid', 'category_id', 'category']:
+                rename_map[col] = 'categoryid'
+            elif col in ['brandamount', 'brand_amount', 'amount']:
+                rename_map[col] = 'brand_amount'
+            elif col in ['microregionid', 'micro_region_id', 'microregion']:
+                rename_map[col] = 'microregionid'
+        
+        if rename_map:
+            df = df.rename(columns=rename_map)
         
         if 'visitdate' in df.columns:
             df['visitdate'] = pd.to_datetime(df['visitdate'])
