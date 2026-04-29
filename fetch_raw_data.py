@@ -992,10 +992,10 @@ def main():
         predictions = ensemble_predict(X_test)
         
         # Обработка бесконечных и слишком больших значений
-        # Замена inf на максимальное конечное значение
+        # Продажи не могут быть отрицательными, поэтому нижняя граница = 0
         max_finite = np.finfo(np.float64).max
-        predictions = np.clip(predictions, -1, max_finite)
-        predictions = np.nan_to_num(predictions, nan=0.0, posinf=max_finite, neginf=-1.0)
+        predictions = np.clip(predictions, 0, max_finite)
+        predictions = np.nan_to_num(predictions, nan=0.0, posinf=max_finite, neginf=0.0)
 
         # Дополнительная проверка и замена выбросов на разумные значения
         # Если есть значения > 1e100, заменяем их на 99-й перцентиль
@@ -1021,6 +1021,8 @@ def main():
 
         
         # Добавление предсказаний в DataFrame
+        # Гарантируем, что прогнозы неотрицательные (продажи не могут быть < 0)
+        predictions = np.maximum(predictions, 0)
         df_test['Predicted_Category_Sum'] = predictions
         
         logger.info(f"Прогнозы выполнены. Статистика предсказаний:")

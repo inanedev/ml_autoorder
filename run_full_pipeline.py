@@ -139,6 +139,14 @@ def load_predictions_from_db(
         if not df.empty:
             # Нормализация имен колонок
             df.columns = [col.lower() for col in df.columns]
+            
+            # Гарантируем, что прогнозы неотрицательные (продажи не могут быть < 0)
+            if 'predicted_category_sum' in df.columns:
+                df['predicted_category_sum'] = df['predicted_category_sum'].clip(lower=0)
+                negative_count = (df['predicted_category_sum'] == 0).sum()
+                if negative_count > 0:
+                    logger.warning(f"Обнаружено {negative_count} записей с отрицательными прогнозами, заменено на 0")
+            
             logger.info(f"Загружено {len(df)} записей предсказаний")
         else:
             logger.warning("Предсказания не найдены в таблице SNS_ML_Predictions")
