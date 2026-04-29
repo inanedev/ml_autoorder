@@ -784,7 +784,7 @@ def main():
         
         X_train = df_train_clean[feature_cols]
         y_train = df_train_clean[target_col]  # Используем оригинальную целевую переменную (БЕЗ логарифма!)
-        y_train_original = df_train_clean[target_col]  # Сохраняем оригинальные значения для метрик
+        # y_train_original больше не нужен, используем напрямую y_train
         
         # ==================== 2. КРОСС-ВАЛИДАЦИЯ С ВРЕМЕННЫМИ РЯДАМИ И АНСАМБЛИРОВАНИЕ ====================
         logger.info("Настройка кросс-валидации с временными рядами и ансамблирования...")
@@ -925,17 +925,17 @@ def main():
             return np.mean(predictions, axis=0)
         
         # Оценка качества на тренировочных данных
-        train_predictions_log = ensemble_predict(X_train)
+        train_predictions = ensemble_predict(X_train)
         
-        # Метрики в логарифмическом пространстве
-        mae_train_log = mean_absolute_error(y_train, train_predictions_log)
-        rmse_train_log = np.sqrt(mean_squared_error(y_train, train_predictions_log))
-        r2_train_log = r2_score(y_train, train_predictions_log)
+        # Метрики в оригинальном пространстве (модель обучена на MAE с оригинальными значениями)
+        mae_train = mean_absolute_error(y_train, train_predictions)
+        rmse_train = np.sqrt(mean_squared_error(y_train, train_predictions))
+        r2_train = r2_score(y_train, train_predictions)
         
-        logger.info(f"Метрики на тренировочных данных (логарифмическое пространство):")
-        logger.info(f"  MAE: {mae_train_log:.4f}")
-        logger.info(f"  RMSE: {rmse_train_log:.4f}")
-        logger.info(f"  R²: {r2_train_log:.4f}")
+        logger.info(f"Метрики на тренировочных данных (оригинальное пространство):")
+        logger.info(f"  MAE: {mae_train:.4f}")
+        logger.info(f"  RMSE: {rmse_train:.4f}")
+        logger.info(f"  R²: {r2_train:.4f}")
         
         # Шаг 4: Загрузка тестовых данных с сегодняшней датой
         logger.info(f"Загрузка тестовых данных для даты {today_date.strftime('%Y-%m-%d')}...")
@@ -990,11 +990,8 @@ def main():
                     X_test[col] = X_test[col].fillna(0)
         
         # Предсказание с использованием ансамбля моделей
-        predictions_log = ensemble_predict(X_test)
+        predictions = ensemble_predict(X_test)
         
-        # Обратное преобразование из логарифмического пространства (expm1 = exp(x) - 1)
-        predictions = np.expm1(predictions_log)
-
         # Обработка бесконечных и слишком больших значений
         # Замена inf на максимальное конечное значение
         max_finite = np.finfo(np.float64).max
@@ -1004,9 +1001,24 @@ def main():
         # Дополнительная проверка и замена выбросов на разумные значения
         # Если есть значения > 1e100, заменяем их на 99-й перцентиль
         if np.any(predictions > 1e100):
-            percentile_99 = np.percentile(predictions[predictions < 1e100], 99)
-            logger.warning(f"Обнаружены экстремальные значения (>1e100). Замена на 99-й перцентиль: {percentile_99:.2f}")
-            predictions = np.where(predictions > 1e100, percentile_99, predictions)
+            finite_predictions = predictions[np.isfinite(predictions) & (predictions < 1e100)]
+            if len(finite_predictions) > 0:
+                percentile_99 = np.percentile(finite_predictions, 99)
+                logger.warning(f"Обнаружены экстремальные значения (>1e100). Замена на 99-й перцентиль: {percentile_99:.2f}")
+                predictions = np.where(predictions > 1e100, percentile_99, predictions)
+            else:
+                logger.warning("Обнаружены экстремальные значения (>1e100). Замена на медиану")
+                predictions = np.where(predictions > 1e100, np.median(predictions[predictions < 1e100]), predictions)
+        
+        # Дополнительная защита от переполнения: ограничение сверху разумным значением
+        # На основе 99.9-го перцентиля для предотвращения проблем при расчете std
+        finite_mask = np.isfinite(predictions)
+        if np.sum(finite_mask) > 0:
+            percentile_999 = np.percentile(predictions[finite_mask], 99.9)
+            upper_limit = max(percentile_999, 1e6)  # Не меньше 1 миллиона
+            if np.max(predictions) > upper_limit:
+                logger.warning(f"Ограничение сверху значений на уровне {upper_limit:.2f} (99.9-й перцентиль)")
+                predictions = np.clip(predictions, None, upper_limit)
 
         
         # Добавление предсказаний в DataFrame
@@ -1020,11 +1032,8 @@ def main():
         # Расчет Prediction_Confidence на основе исторической точности модели
         logger.info("Расчет метрик уверенности предсказаний...")
         
-        # Расчет MAE на тренировочных данных для оценки точности (в оригинальном пространстве)
-        train_predictions_original = np.expm1(train_predictions_log)
-        mae_train = mean_absolute_error(y_train_original, train_predictions_original)
-        rmse_train = np.sqrt(mean_squared_error(y_train_original, train_predictions_original))
-        r2_train = r2_score(y_train_original, train_predictions_original)
+        # Метрики уже рассчитаны выше (mae_train, rmse_train, r2_train)
+        # Используем их напрямую без повторного расчета
         
         logger.info(f"Метрики на тренировочных данных (оригинальное пространство):")
         logger.info(f"  MAE: {mae_train:.2f}")
@@ -1033,7 +1042,7 @@ def main():
         
         # Расчет confidence как обратной величины от относительной ошибки
         # Confidence будет в диапазоне [0, 1], где 1 - максимальная уверенность
-        mean_actual = y_train_original.mean()
+        mean_actual = y_train.mean()
         relative_error = mae_train / mean_actual if mean_actual > 0 else 1
         
         # Базовая уверенность модели (чем меньше ошибка, тем выше уверенность)
@@ -1046,9 +1055,22 @@ def main():
         pred_std = predictions.std()
         pred_mean = predictions.mean()
         
+        # Защита от бесконечных/NaN значений при расчете std и mean
+        if not np.isfinite(pred_std) or not np.isfinite(pred_mean):
+            logger.warning("Обнаружены некорректные значения pred_std или pred_mean. Используем безопасные значения.")
+            finite_predictions = predictions[np.isfinite(predictions)]
+            if len(finite_predictions) > 0:
+                pred_std = finite_predictions.std()
+                pred_mean = finite_predictions.mean()
+            else:
+                pred_std = 1.0
+                pred_mean = 0.0
+        
         # Confidence уменьшается для выбросов (далеких от среднего)
-        if pred_std > 0:
+        if pred_std > 0 and np.isfinite(pred_std) and np.isfinite(pred_mean):
             z_scores = np.abs((predictions - pred_mean) / pred_std)
+            # Замена бесконечных z_scores на большие конечные значения
+            z_scores = np.nan_to_num(z_scores, nan=10.0, posinf=10.0, neginf=10.0)
             # Преобразуем z-score в confidence (чем больше отклонение, тем меньше уверенность)
             individual_confidence = np.exp(-0.5 * (z_scores ** 2))
         else:
