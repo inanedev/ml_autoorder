@@ -468,6 +468,11 @@ class OrderRecommender:
             category_id = int(row['categoryid'])
             forecast_amount = float(row['sumroubles'])
             
+            # Гарантируем, что прогноз неотрицательный (продажи не могут быть < 0)
+            if forecast_amount < 0:
+                logger.warning(f"Точка {point_id}, категория {category_id}: отрицательный прогноз {forecast_amount:.2f}, заменено на 0")
+                forecast_amount = 0.0
+            
             # Определяем days_until_visit: из predictions_df или используем резервное значение
             if has_days_until_col and 'days_until_next_visit' in row:
                 current_days_until = int(row['days_until_next_visit']) if pd.notna(row['days_until_next_visit']) else (days_until_visit or 7)
@@ -796,6 +801,11 @@ class OrderRecommender:
         """
         if reference_date is None:
             reference_date = datetime.now()
+            
+        # Гарантируем, что прогноз неотрицательный (продажи не могут быть < 0)
+        if forecast_amount < 0:
+            logger.warning(f"Точка {point_id}, категория {category_id}: отрицательный прогноз {forecast_amount:.2f}, заменено на 0")
+            forecast_amount = 0.0
             
         target_dow = reference_date.isoweekday()
         
