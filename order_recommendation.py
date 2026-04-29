@@ -189,6 +189,127 @@ class OrderRecommender:
         self._sales_history_cache = None
         self._reference_date = None
     
+    def _calculate_point_classes(
+        self, 
+        sales_history: pd.DataFrame,
+        brand_rules: pd.DataFrame
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Рассчитывает классы точек по общему объему продаж и по категориям.
+        
+        PointTotalClass: категоризация всех точек по объему продаж на 10 групп (децили)
+        PointCategoryClass: категоризация точек по объему продаж в каждой категории на 10 групп
+        
+        Объем продаж рассчитывается как сумма (brand_amount * avgprice) для каждого бренда.
+        
+        Args:
+            sales_history: DataFrame с историей продаж (pointid, categoryid, brand, brand_amount, visitdate)
+            brand_rules: DataFrame с правилами брендов (categoryid, brand, avgprice)
+            
+        Returns:
+            Tuple[pd.DataFrame, pd.DataFrame]: 
+                - point_total_class: DataFrame (pointid, total_sales, point_total_class)
+                - point_category_class: DataFrame (pointid, categoryid, category_sales, point_category_class)
+        """
+        if sales_history.empty or 'pointid' not in sales_history.columns:
+            return pd.DataFrame(), pd.DataFrame()
+        
+        # Проверяем наличие необходимых колонок
+        required_cols = ['pointid', 'categoryid', 'brand', 'brand_amount']
+        for col in required_cols:
+            if col not in sales_history.columns:
+                logger.warning(f"Отсутствует необходимая колонка {col} в истории продаж")
+                return pd.DataFrame(), pd.DataFrame()
+        
+        # Объединяем историю продаж с ценами брендов для расчета суммы продаж
+        if brand_rules.empty or 'avgprice' not in brand_rules.columns:
+            logger.warning("Нет данных о ценах брендов (avgprice), используем brand_amount как сумму")
+            sales_with_price = sales_history.copy()
+            sales_with_price['sales_value'] = sales_with_price['brand_amount']
+        else:
+            # Нормализуем имена колонок в brand_rules
+            brand_rules_norm = brand_rules.copy()
+            brand_rules_norm.columns = [col.lower() for col in brand_rules_norm.columns]
+            
+            # Объединяем по categoryid и brand
+            sales_with_price = sales_history.merge(
+                brand_rules_norm[['categoryid', 'brand', 'avgprice']],
+                on=['categoryid', 'brand'],
+                how='left'
+            )
+            # Если цена не найдена, используем 0 (или можно использовать среднюю цену)
+            sales_with_price['avgprice'] = sales_with_price['avgprice'].fillna(0.0)
+            # Рассчитываем сумму продаж: количество * цена
+            sales_with_price['sales_value'] = sales_with_price['brand_amount'] * sales_with_price['avgprice']
+        
+        # 1. Рассчитываем общие продажи по точкам (за весь период истории)
+        point_totals = sales_with_price.groupby('pointid', as_index=False)['sales_value'].sum()
+        point_totals.columns = ['pointid', 'total_sales']
+        
+        # Категоризация на 10 групп (децили) через квантили
+        # Класс 1 - наименьшие продажи, Класс 10 - наибольшие продажи
+        if len(point_totals) > 0:
+            point_totals['point_total_class'] = pd.qcut(
+                point_totals['total_sales'], 
+                q=10, 
+                labels=False, 
+                duplicates='drop'
+            ) + 1  # Классы от 1 до 10
+            
+            # Если меньше 10 уникальных значений (мало точек), используем rank
+            if point_totals['point_total_class'].nunique() < 2:
+                point_totals['point_total_class'] = pd.cut(
+                    point_totals['total_sales'],
+                    bins=10,
+                    labels=False
+                ) + 1
+                point_totals['point_total_class'] = point_totals['point_total_class'].fillna(1).astype(int)
+        else:
+            point_totals['point_total_class'] = 1
+        
+        # 2. Рассчитываем продажи по точкам и категориям
+        point_category_totals = sales_with_price.groupby(
+            ['pointid', 'categoryid'], 
+            as_index=False
+        )['sales_value'].sum()
+        point_category_totals.columns = ['pointid', 'categoryid', 'category_sales']
+        
+        # Категоризация на 10 групп внутри каждой категории
+        def assign_category_class(group):
+            if len(group) == 0:
+                group['point_category_class'] = 1
+                return group
+            
+            # Пытаемся использовать qcut для равного количества точек в каждом классе
+            try:
+                n_unique = group['category_sales'].nunique()
+                q = min(10, len(group), n_unique)
+                if q < 2:
+                    group['point_category_class'] = 1
+                else:
+                    group['point_category_class'] = pd.qcut(
+                        group['category_sales'],
+                        q=q,
+                        labels=False,
+                        duplicates='drop'
+                    ) + 1
+            except Exception:
+                # Если qcut не работает (много одинаковых значений), используем cut
+                group['point_category_class'] = pd.cut(
+                    group['category_sales'],
+                    bins=10,
+                    labels=False
+                ) + 1
+                group['point_category_class'] = group['point_category_class'].fillna(1).astype(int)
+            
+            return group
+        
+        point_category_class = point_category_totals.groupby('categoryid', group_keys=False).apply(
+            assign_category_class
+        )
+        
+        return point_totals, point_category_class
+
     def _prepare_sales_history(self, df: pd.DataFrame) -> pd.DataFrame:
         """Приводит типы данных и подготавливает DataFrame истории продаж."""
         if df.empty:
@@ -262,6 +383,20 @@ class OrderRecommender:
         
         # 2. Загружаем ВСЮ историю продаж один раз
         sales_history = self.get_all_sales_history(reference_date, force_refresh=force_refresh)
+        
+        # 3. Рассчитываем классы точек (PointTotalClass и PointCategoryClass)
+        # Передаем brand_rules для расчета суммы продаж (brand_amount * avgprice)
+        point_total_class, point_category_class = self._calculate_point_classes(sales_history, brand_rules)
+        
+        # Объединяем классы для дальнейшего использования
+        if not point_total_class.empty and not point_category_class.empty:
+            point_classes = point_category_class.merge(
+                point_total_class[['pointid', 'point_total_class']], 
+                on='pointid', 
+                how='left'
+            )
+        else:
+            point_classes = pd.DataFrame()
         
         # Нормализуем имена колонок в predictions
         pred_df = predictions_df.copy()
@@ -339,6 +474,29 @@ class OrderRecommender:
             else:
                 current_days_until = days_until_visit or 7
             
+            # Рассчитываем скорректированный бюджет на основе разницы классов
+            adjusted_forecast_amount = forecast_amount
+            if not point_classes.empty:
+                # Получаем классы для данной точки и категории
+                point_class_row = point_classes[
+                    (point_classes['pointid'] == point_id) & 
+                    (point_classes['categoryid'] == category_id)
+                ]
+                
+                if not point_class_row.empty:
+                    point_total_cls = point_class_row['point_total_class'].iloc[0]
+                    point_category_cls = point_class_row['point_category_class'].iloc[0]
+                    
+                    # Разрыв между общим классом точки и классов категории
+                    class_gap = point_total_cls - point_category_cls
+                    
+                    # Если разрыв положительный (точка в целом продает больше, чем данная категория),
+                    # увеличиваем прогнозный бюджет на 10% за каждую единицу разрыва
+                    if class_gap > 0:
+                        adjustment_factor = 1.0 + (class_gap * 0.10)
+                        adjusted_forecast_amount = forecast_amount * adjustment_factor
+                        logger.debug(f"Точка {point_id}, категория {category_id}: разрыв классов={class_gap}, коэффициент={adjustment_factor:.2f}")
+            
             try:
                 # Фильтруем правила брендов для категории
                 cat_rules = brand_rules[brand_rules['categoryid'] == category_id].copy()
@@ -387,12 +545,12 @@ class OrderRecommender:
                 if rec_df.empty:
                     continue
                 
-                # Распределяем бюджет
-                final_df = self._distribute_forecast_budget(rec_df, forecast_amount)
+                # Распределяем скорректированный бюджет
+                final_df = self._distribute_forecast_budget(rec_df, adjusted_forecast_amount)
                 included_df = final_df[final_df['included']].sort_values('priority', ascending=False)
                 
                 if not included_df.empty:
-                    results.append((point_id, category_id, forecast_amount, included_df))
+                    results.append((point_id, category_id, adjusted_forecast_amount, included_df))
                 
                 if (idx + 1) % 50 == 0:
                     logger.info(f"Обработано {idx + 1}/{total_pairs} пар")
