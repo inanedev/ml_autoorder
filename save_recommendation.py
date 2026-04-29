@@ -59,7 +59,7 @@ class RecommendationStorage:
             cursor = conn.cursor()
             
             # Подготовка данных для вставки
-            target_dow = reference_date.weekday()
+            target_dow = reference_date.isoweekday()
             
             insert_query = """
                 INSERT INTO dbo.SNS_ML_Brand_Recommendations (
