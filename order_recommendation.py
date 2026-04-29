@@ -503,6 +503,9 @@ class OrderRecommender:
                 if cat_rules.empty:
                     continue
                 
+                # Инициализируем point_sales пустым DataFrame
+                point_sales = pd.DataFrame(columns=['brand', 'avg_sales'])
+                
                 # Фильтруем продажи для точки и категории по целевому дню недели
                 if not sales_agg.empty:
                     point_sales = sales_agg[
