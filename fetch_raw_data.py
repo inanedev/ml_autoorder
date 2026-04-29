@@ -519,8 +519,7 @@ def add_sales_features(df: pd.DataFrame, start_date: str, end_date: str) -> pd.D
     df_result = df_result.merge(
         daily_agg[merge_cols + feature_cols],
         on=merge_cols,
-        how='left',
-        suffixes=('', '_daily')
+        how='left'
     )
     
     logger.info(f"Добавлены фичи продаж: {len(df_result.columns)} колонок всего")
