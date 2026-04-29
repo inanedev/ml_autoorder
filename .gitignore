@@ -1,1 +1,39 @@
-Nothing should be ignored since the changes only include Python source files (.py) which are source code files.
+```
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# Dependencies
+.venv/
+venv/
+node_modules/
+
+# Build artifacts
+dist/
+build/
+target/
+
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# Cache
+.mypy_cache/
+.pytest_cache/
+```
