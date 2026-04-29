@@ -756,21 +756,21 @@ def main():
         # Преобразование target_col к числовому типу для предотвращения ошибок с decimal.Decimal
         df_train_clean[target_col] = pd.to_numeric(df_train_clean[target_col], errors='coerce')
         
-        # ==================== 1. ОБРАБОТКА ВЫБРОСОВ И ЛОГАРИФМИРОВАНИЕ ЦЕЛЕВОЙ ПЕРЕМЕННОЙ ====================
+        # ==================== 1. ОБРАБОТКА ВЫБРОСОВ В ЦЕЛЕВОЙ ПЕРЕМЕННОЙ ====================
         logger.info("Обработка выбросов в целевой переменной...")
         
-        # Логарифмирование целевой переменной для нормализации распределения
-        df_train_clean['log_target'] = np.log1p(df_train_clean[target_col])
+        # Работаем напрямую с оригинальной целевой переменной (без логарифмирования!)
+        # Логарифмирование приводило к систематическому занижению прогнозов
         
-        # Расчет границ для удаления выбросов (метод IQR)
-        Q1 = df_train_clean['log_target'].quantile(0.25)
-        Q3 = df_train_clean['log_target'].quantile(0.75)
+        # Расчет границ для удаления выбросов (метод IQR) на оригинальных данных
+        Q1 = df_train_clean[target_col].quantile(0.25)
+        Q3 = df_train_clean[target_col].quantile(0.75)
         IQR = Q3 - Q1
         lower_bound = Q1 - 3 * IQR
         upper_bound = Q3 + 3 * IQR
         
         # Фильтрация выбросов
-        outliers_mask = (df_train_clean['log_target'] < lower_bound) | (df_train_clean['log_target'] > upper_bound)
+        outliers_mask = (df_train_clean[target_col] < lower_bound) | (df_train_clean[target_col] > upper_bound)
         n_outliers = outliers_mask.sum()
         
         if n_outliers > 0:
@@ -778,7 +778,7 @@ def main():
             df_train_clean = df_train_clean[~outliers_mask]
         
         X_train = df_train_clean[feature_cols]
-        y_train = df_train_clean['log_target']  # Используем логарифмированную целевую переменную
+        y_train = df_train_clean[target_col]  # Используем оригинальную целевую переменную (БЕЗ логарифма!)
         y_train_original = df_train_clean[target_col]  # Сохраняем оригинальные значения для метрик
         
         # ==================== 2. КРОСС-ВАЛИДАЦИЯ С ВРЕМЕННЫМИ РЯДАМИ И АНСАМБЛИРОВАНИЕ ====================
