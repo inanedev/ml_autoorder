@@ -34,6 +34,8 @@ class RecommendationStorage:
         """
         Сохраняет рекомендации по брендам в таблицу SQL Server.
         
+        ИСПОЛЬЗУЕТСЯ BATCH INSERT через executemany для производительности.
+        
         Args:
             recommendation_df: DataFrame с результатами расчета из OrderRecommender
             point_id: ID торговой точки
@@ -58,6 +60,9 @@ class RecommendationStorage:
             conn = get_connection()
             cursor = conn.cursor()
             
+            # Включаем режим быстрой вставки для ODBC
+            cursor.fast_executemany = True
+            
             # Подготовка данных для вставки
             target_dow = reference_date.isoweekday()
             
@@ -73,10 +78,10 @@ class RecommendationStorage:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             
-            records_inserted = 0
-            
+            # Формируем список кортежей для batch insert
+            records = []
             for _, row in recommendation_df.iterrows():
-                cursor.execute(insert_query, (
+                record = (
                     point_id,                                    # PointId
                     category_id,                                 # CategoryId
                     forecast_amount,                             # ForecastAmount
@@ -102,12 +107,17 @@ class RecommendationStorage:
                     1 if row.get('included', False) else 0,      # Included
                     
                     model_version                                # ModelVersion
-                ))
-                records_inserted += 1
+                )
+                records.append(record)
             
-            conn.commit()
-            logger.info(f"Сохранено {records_inserted} записей рекомендаций для точки {point_id}, категория {category_id}")
-            return records_inserted
+            # Batch insert всех записей одним вызовом
+            if records:
+                cursor.executemany(insert_query, records)
+                conn.commit()
+                logger.info(f"Сохранено {len(records)} записей рекомендаций для точки {point_id}, категория {category_id} (batch insert)")
+                return len(records)
+            else:
+                return 0
             
         except Exception as e:
             if conn:

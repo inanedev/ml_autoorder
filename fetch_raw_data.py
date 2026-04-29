@@ -9,7 +9,9 @@ import numpy as np
 from catboost import CatBoostRegressor, Pool, cv
 import shutil
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import KFold
+from sklearn.model_selection import TimeSeriesSplit, KFold
+from functools import lru_cache
+import hashlib
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -238,6 +240,8 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
     """
     Добавляет фичи истории заказов для подготовки модели машинного обучения.
     
+    ОПТИМИЗИРОВАННАЯ ВЕРСИЯ: использует векторизованные операции pandas вместо циклов.
+    
     Аргументы:
         df: DataFrame с данными продаж (должен содержать историю за 6 месяцев)
         start_date: Начальная дата периода выгрузки (строка YYYY-MM-DD)
@@ -301,90 +305,66 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
     df_result['Average_Interval_Category'] = np.nan
     df_result['Days_Until_Next_Visit'] = np.nan
     
-    # Расчет для каждой уникальной комбинации outlet + date
-    unique_outlets = df_result[outlet_col].unique()
+    logger.info(f"Расчет фичей истории заказов (векторизованный метод)...")
     
-    logger.info(f"Расчет фичей истории заказов для {len(unique_outlets)} точек продаж...")
+    # Сортировка по точке и дате для корректного расчета diff
+    df_result = df_result.sort_values([outlet_col, date_col]).reset_index(drop=True)
     
-    for outlet_id in unique_outlets:
-        # Фильтрация данных по точке
-        outlet_data = df_result[df_result[outlet_col] == outlet_id].copy()
+    # ========== 1. Days_Since_Last_Order_Total (векторизованно) ==========
+    # Используем groupby + shift для получения предыдущей даты заказа
+    df_result['prev_order_date'] = df_result.groupby(outlet_col)[date_col].shift(1)
+    df_result['Days_Since_Last_Order_Total'] = (
+        df_result[date_col] - df_result['prev_order_date']
+    ).dt.days
+    
+    # ========== 2. Days_Until_Next_Visit (векторизованно) ==========
+    # Используем groupby + shift(-1) для получения следующей даты заказа
+    df_result['next_order_date'] = df_result.groupby(outlet_col)[date_col].shift(-1)
+    df_result['Days_Until_Next_Visit'] = (
+        df_result['next_order_date'] - df_result[date_col]
+    ).dt.days
+    
+    # Для последней записи в каждой точке заполняем значением 7
+    last_visit_mask = df_result['Days_Until_Next_Visit'].isna()
+    df_result.loc[last_visit_mask, 'Days_Until_Next_Visit'] = 7
+    
+    # Удаляем временные колонки
+    df_result.drop(columns=['prev_order_date', 'next_order_date'], inplace=True)
+    
+    # ========== 3. Days_Since_Last_Order_Category (векторизованно) ==========
+    if category_col is not None:
+        # Группируем по точке + категория
+        df_result['prev_category_date'] = df_result.groupby(
+            [outlet_col, category_col]
+        )[date_col].shift(1)
         
-        if outlet_data.empty:
-            continue
+        df_result['Days_Since_Last_Order_Category'] = (
+            df_result[date_col] - df_result['prev_category_date']
+        ).dt.days
         
-        # Сортировка по дате
-        outlet_data = outlet_data.sort_values(date_col)
+        # Удаляем временную колонку
+        df_result.drop(columns=['prev_category_date'], inplace=True)
+    
+    # ========== 4. Average_Interval_Category (векторизованно) ==========
+    if category_col is not None:
+        # Рассчитываем интервалы между заказами внутри каждой группы точка-категория
+        df_result['category_interval'] = df_result.groupby(
+            [outlet_col, category_col]
+        )[date_col].diff().dt.days
         
-        # Расчет Days_Since_Last_Order_Total и Days_Until_Next_Visit для каждой даты
-        outlet_mask = df_result[outlet_col] == outlet_id
-        outlet_indices = df_result.loc[outlet_mask].index
+        # Средний интервал по каждой группе
+        avg_intervals = df_result.groupby(
+            [outlet_col, category_col], as_index=False
+        )['category_interval'].mean().rename(columns={'category_interval': 'avg_interval'})
         
-        for idx in outlet_indices:
-            current_date = df_result.loc[idx, date_col]
-            
-            # Прошлые заказы этой точки (все записи до текущей даты)
-            past_orders = outlet_data[outlet_data[date_col] < current_date]
-            
-            # Будущие заказы этой точки (все записи после текущей даты)
-            future_orders = outlet_data[outlet_data[date_col] > current_date]
-            
-            if not past_orders.empty:
-                # Days_Since_Last_Order_Total
-                last_order_date = past_orders[date_col].max()
-                days_since = (current_date - last_order_date).days
-                df_result.loc[idx, 'Days_Since_Last_Order_Total'] = days_since
-                
-                # Days_Since_Last_Order_Category (если есть category_id)
-                if category_col is not None:
-                    current_category = df_result.loc[idx, category_col]
-                    if pd.notna(current_category):
-                        category_history = past_orders[
-                            past_orders[category_col] == current_category
-                        ]
-                        if not category_history.empty:
-                            last_category_date = category_history[date_col].max()
-                            days_since_cat = (current_date - last_category_date).days
-                            df_result.loc[idx, 'Days_Since_Last_Order_Category'] = days_since_cat
-            
-            # Расчет Days_Until_Next_Visit (дней до следующего визита)
-            if not future_orders.empty:
-                next_visit_date = future_orders[date_col].min()
-                days_until = (next_visit_date - current_date).days
-                df_result.loc[idx, 'Days_Until_Next_Visit'] = days_until
-            else:
-                # Для последнего визита: берем значение визита недельной давности или 7
-                week_ago_date = current_date - timedelta(days=7)
-                week_ago_orders = outlet_data[outlet_data[date_col] == week_ago_date]
-                
-                if not week_ago_orders.empty:
-                    # Берем значение Days_Until_Next_Visit для визита недельной давности
-                    week_ago_idx = week_ago_orders.index[0]
-                    week_ago_value = df_result.loc[week_ago_idx, 'Days_Until_Next_Visit']
-                    if pd.notna(week_ago_value):
-                        df_result.loc[idx, 'Days_Until_Next_Visit'] = week_ago_value
-                    else:
-                        df_result.loc[idx, 'Days_Until_Next_Visit'] = 7
-                else:
-                    # Если визита недельной давности нет, ставим 7
-                    df_result.loc[idx, 'Days_Until_Next_Visit'] = 7
-        
-        # Расчет Average_Interval_Category (средний интервал между заказами категории)
-        if category_col is not None:
-            for category_id in outlet_data[category_col].dropna().unique():
-                cat_data = outlet_data[
-                    outlet_data[category_col] == category_id
-                ].sort_values(date_col)
-                
-                if len(cat_data) > 1:
-                    # Расчет интервалов между заказами
-                    intervals = cat_data[date_col].diff().dt.days.dropna()
-                    avg_interval = intervals.mean() if len(intervals) > 0 else np.nan
-                    
-                    # Присвоение среднего интервала всем записям этой категории в этой точке
-                    mask = (df_result[outlet_col] == outlet_id) & \
-                           (df_result[category_col] == category_id)
-                    df_result.loc[mask, 'Average_Interval_Category'] = avg_interval
+        # Merge среднего интервала обратно в основной DataFrame
+        df_result = df_result.merge(
+            avg_intervals,
+            on=[outlet_col, category_col],
+            how='left'
+        )
+        df_result['Average_Interval_Category'] = df_result['avg_interval']
+        df_result.drop(columns=['avg_interval', 'category_interval'], inplace=True)
     
     logger.info(f"Добавлены фичи истории заказов: {len(df_result.columns)} колонок всего")
     
@@ -846,8 +826,8 @@ def main():
         y_train = df_train_clean['log_target']  # Используем логарифмированную целевую переменную
         y_train_original = df_train_clean[target_col]  # Сохраняем оригинальные значения для метрик
         
-        # ==================== 2. КРОСС-ВАЛИДАЦИЯ И АНСАМБЛИРОВАНИЕ МОДЕЛЕЙ ====================
-        logger.info("Настройка кросс-валидации и ансамблирования...")
+        # ==================== 2. КРОСС-ВАЛИДАЦИЯ С ВРЕМЕННЫМИ РЯДАМИ И АНСАМБЛИРОВАНИЕ ====================
+        logger.info("Настройка кросс-валидации с временными рядами и ансамблирования...")
         
         # Параметры для CatBoost с MAE вместо RMSE
         base_params = {
@@ -862,24 +842,28 @@ def main():
             'early_stopping_rounds': 50
         }
         
-        # Разные конфигурации для ансамбля
+        # Разные конфигурации для ансамбля (разная глубина и learning rate)
         ensemble_configs = [
             {**base_params, 'depth': 6, 'learning_rate': 0.1, 'random_seed': 42},
             {**base_params, 'depth': 8, 'learning_rate': 0.05, 'random_seed': 123},
             {**base_params, 'depth': 4, 'learning_rate': 0.15, 'random_seed': 456},
+            {**base_params, 'depth': 7, 'learning_rate': 0.08, 'random_seed': 789},
+            {**base_params, 'depth': 5, 'learning_rate': 0.12, 'random_seed': 101112},
         ]
         
-        # Кросс-валидация для оценки качества
+        # ==================== 2.1 КРОСС-ВАЛИДАЦИЯ С ВРЕМЕННЫМИ РЯДАМИ ====================
+        # Используем TimeSeriesSplit для корректной валидации на временных данных
         n_splits = 5
-        kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+        tscv = TimeSeriesSplit(n_splits=n_splits)
         
         cv_scores_mae = []
         cv_scores_rmse = []
         cv_scores_r2 = []
         
-        logger.info(f"Проведение кросс-валидации ({n_splits} folds)...")
+        logger.info(f"Проведение кросс-валидации с временными рядами ({n_splits} folds)...")
+        logger.info("TimeSeriesSplit гарантирует, что тестовые данные всегда идут после обучающих")
         
-        for fold_idx, (train_idx, val_idx) in enumerate(kf.split(X_train)):
+        for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(X_train)):
             X_fold_train = X_train.iloc[train_idx]
             X_fold_val = X_train.iloc[val_idx]
             y_fold_train = y_train.iloc[train_idx]
@@ -906,10 +890,54 @@ def main():
             
             logger.info(f"Fold {fold_idx+1}: MAE={mae_fold:.4f}, RMSE={rmse_fold:.4f}, R²={r2_fold:.4f}")
         
-        logger.info(f"Кросс-валидация завершена. Средние метрики:")
+        logger.info(f"Кросс-валидация с временными рядами завершена. Средние метрики:")
         logger.info(f"  MAE: {np.mean(cv_scores_mae):.4f} (+/- {np.std(cv_scores_mae):.4f})")
         logger.info(f"  RMSE: {np.mean(cv_scores_rmse):.4f} (+/- {np.std(cv_scores_rmse):.4f})")
         logger.info(f"  R²: {np.mean(cv_scores_r2):.4f} (+/- {np.std(cv_scores_r2):.4f})")
+        
+        # ==================== 2.2 ДОПОЛНИТЕЛЬНАЯ КРОСС-ВАЛИДАЦИЯ K-Fold ДЛЯ СРАВНЕНИЯ ====================
+        logger.info("\nДополнительная K-Fold кросс-валидация (shuffle=True) для сравнения...")
+        
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+        kf_scores_mae = []
+        kf_scores_rmse = []
+        kf_scores_r2 = []
+        
+        for fold_idx, (train_idx, val_idx) in enumerate(kf.split(X_train)):
+            X_fold_train = X_train.iloc[train_idx]
+            X_fold_val = X_train.iloc[val_idx]
+            y_fold_train = y_train.iloc[train_idx]
+            y_fold_val = y_train.iloc[val_idx]
+            
+            train_pool = Pool(X_fold_train, y_fold_train, cat_features=categorical_features if categorical_features else None)
+            val_pool = Pool(X_fold_val, y_fold_val, cat_features=categorical_features if categorical_features else None)
+            
+            model_kf = CatBoostRegressor(**base_params)
+            model_kf.fit(train_pool, eval_set=val_pool, verbose=False)
+            
+            y_pred_fold = model_kf.predict(val_pool)
+            
+            mae_fold = mean_absolute_error(y_fold_val, y_pred_fold)
+            rmse_fold = np.sqrt(mean_squared_error(y_fold_val, y_pred_fold))
+            r2_fold = r2_score(y_fold_val, y_pred_fold)
+            
+            kf_scores_mae.append(mae_fold)
+            kf_scores_rmse.append(rmse_fold)
+            kf_scores_r2.append(r2_fold)
+        
+        logger.info(f"K-Fold средние метрики:")
+        logger.info(f"  MAE: {np.mean(kf_scores_mae):.4f} (+/- {np.std(kf_scores_mae):.4f})")
+        logger.info(f"  RMSE: {np.mean(kf_scores_rmse):.4f} (+/- {np.std(kf_scores_rmse):.4f})")
+        logger.info(f"  R²: {np.mean(kf_scores_r2):.4f} (+/- {np.std(kf_scores_r2):.4f})")
+        
+        # Выбираем лучшую схему кросс-валидации по R²
+        ts_r2_mean = np.mean(cv_scores_r2)
+        kf_r2_mean = np.mean(kf_scores_r2)
+        
+        if ts_r2_mean >= kf_r2_mean:
+            logger.info(f"\n✓ TimeSeriesSplit показал лучший результат (R²={ts_r2_mean:.4f}), используем его для финальной оценки")
+        else:
+            logger.info(f"\n✓ K-Fold показал лучший результат (R²={kf_r2_mean:.4f}), но для временных рядов рекомендуем TimeSeriesSplit")
         
         # ==================== 3. ОБУЧЕНИЕ АНСАМБЛЯ МОДЕЛЕЙ ====================
         logger.info("Обучение ансамбля моделей...")
