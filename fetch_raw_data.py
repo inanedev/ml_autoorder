@@ -749,12 +749,17 @@ def main():
         for col in numeric_features:
             # Принудительное преобразование к числовому типу, заменяя нечисловые значения на NaN
             df_train_clean[col] = pd.to_numeric(df_train_clean[col], errors='coerce')
+            # Замена бесконечных значений на NaN
+            df_train_clean[col] = df_train_clean[col].replace([np.inf, -np.inf], np.nan)
             if df_train_clean[col].isna().any():
                 if df_train_clean[col].dtype in ['float64', 'int64']:
                     df_train_clean[col] = df_train_clean[col].fillna(0)
         
         # Преобразование target_col к числовому типу для предотвращения ошибок с decimal.Decimal
         df_train_clean[target_col] = pd.to_numeric(df_train_clean[target_col], errors='coerce')
+        # Замена бесконечных значений в целевой переменной на NaN и последующее удаление строк
+        df_train_clean[target_col] = df_train_clean[target_col].replace([np.inf, -np.inf], np.nan)
+        df_train_clean = df_train_clean.dropna(subset=[target_col])
         
         # ==================== 1. ОБРАБОТКА ВЫБРОСОВ В ЦЕЛЕВОЙ ПЕРЕМЕННОЙ ====================
         logger.info("Обработка выбросов в целевой переменной...")
@@ -979,6 +984,8 @@ def main():
             if col in X_test.columns:
                 # Принудительное преобразование к числовому типу, заменяя нечисловые значения на NaN
                 X_test[col] = pd.to_numeric(X_test[col], errors='coerce')
+                # Замена бесконечных значений на NaN
+                X_test[col] = X_test[col].replace([np.inf, -np.inf], np.nan)
                 if X_test[col].isna().any():
                     X_test[col] = X_test[col].fillna(0)
         
