@@ -994,6 +994,20 @@ def main():
         
         # Обратное преобразование из логарифмического пространства (expm1 = exp(x) - 1)
         predictions = np.expm1(predictions_log)
+
+        # Обработка бесконечных и слишком больших значений
+        # Замена inf на максимальное конечное значение
+        max_finite = np.finfo(np.float64).max
+        predictions = np.clip(predictions, -1, max_finite)
+        predictions = np.nan_to_num(predictions, nan=0.0, posinf=max_finite, neginf=-1.0)
+
+        # Дополнительная проверка и замена выбросов на разумные значения
+        # Если есть значения > 1e100, заменяем их на 99-й перцентиль
+        if np.any(predictions > 1e100):
+            percentile_99 = np.percentile(predictions[predictions < 1e100], 99)
+            logger.warning(f"Обнаружены экстремальные значения (>1e100). Замена на 99-й перцентиль: {percentile_99:.2f}")
+            predictions = np.where(predictions > 1e100, percentile_99, predictions)
+
         
         # Добавление предсказаний в DataFrame
         df_test['Predicted_Category_Sum'] = predictions
