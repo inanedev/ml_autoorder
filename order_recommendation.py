@@ -222,7 +222,7 @@ class OrderRecommender:
         
         if 'visitdate' in df.columns:
             df['visitdate'] = pd.to_datetime(df['visitdate'])
-            df['dayofweek'] = df['visitdate'].dt.dayofweek
+            df['dayofweek'] = df['visitdate'].dt.isoweekday()
             
         return df
     
@@ -250,9 +250,9 @@ class OrderRecommender:
         if reference_date is None:
             reference_date = datetime.now().date()
         
-        target_dow = reference_date.weekday()
+        target_dow = reference_date.isoweekday()
         logger.info(f"Пакетная генерация рекомендаций для {len(predictions_df)} пар точка-категория")
-        logger.info(f"Целевой день недели: {target_dow} ({['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][target_dow]})")
+        logger.info(f"Целевой день недели: {target_dow} ({['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][target_dow - 1]})")
         
         # 1. Загружаем ВСЕ правила брендов один раз
         brand_rules = self.get_all_brand_rules(force_refresh=force_refresh)
@@ -636,7 +636,7 @@ class OrderRecommender:
         if reference_date is None:
             reference_date = datetime.now()
             
-        target_dow = reference_date.weekday()
+        target_dow = reference_date.isoweekday()
         
         # 1. Получаем правила брендов для категории (с кэшированием)
         brand_rules = self.get_brand_rules(
