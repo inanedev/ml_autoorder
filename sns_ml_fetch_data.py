@@ -127,6 +127,170 @@ def fetch_raw_data(start_date: date, end_date: date) -> pd.DataFrame:
             logger.info("Соединение с базой данных закрыто")
 
 
+def fetch_test_data(target_date: date) -> pd.DataFrame:
+    """
+    Загружает тестовые данные из хранимой процедуры SNS_ML_Get_Test_Data.
+    
+    Args:
+        target_date: Дата, на которую загружаются тестовые данные
+        
+    Returns:
+        pd.DataFrame: Датафрейм с колонками:
+            - VisitDate: Дата прогноза (TargetDate)
+            - PointID: Идентификатор точки продаж
+            - CategoryID: Идентификатор категории товара
+            - BranchID: Идентификатор филиала/дистрибьютора
+            - PointClass: Класс точки продаж
+            - PointType: Тип точки продаж
+            - Lat: Широта точки продаж
+            - Lon: Долгота точки продаж
+            - MicroRegionID: Идентификатор микрорегиона (сетка 3x3 км)
+            - DayOfWeek: День недели (1-понедельник, 7-воскресенье)
+            - IsFriday: Признак пятницы (1/0)
+            - IsMonday: Признак понедельника (1/0)
+            - DaysToNextHoliday: Дней до ближайшего праздника
+            - DaysSinceLastHoliday: Дней от последнего праздника
+            - IsPreHoliday: Признак предпраздничного дня (1/0)
+            - IsPostHoliday: Признак постпраздничного дня (1/0)
+            - Quarter: Номер квартала
+            - Month: Номер месяца
+            - WeekOfYear: Номер недели в году
+            - DayOfMonth: День месяца
+            - DayOfYear: День года
+            - isEndOfMonth: Признак конца месяца (1/0)
+            - DaysLastVisit: Дней с последнего визита
+            - DaysNextVisit: Дней до следующего визита
+            - DaysLastSalesCategory: Дней с последней продажи категории
+            - LastSalesCategory: Сумма последней продажи категории
+            
+    Raises:
+        Exception: При ошибке выполнения хранимой процедуры
+    """
+    query = """
+    EXEC dbo.SNS_ML_Get_Test_Data 
+        @TargetDate = ?
+    """
+    
+    logger.info(f"Вызов хранимой процедуры SNS_ML_Get_Test_Data с датой: {target_date}")
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Выполнение хранимой процедуры с параметром
+        cursor.execute(query, (target_date,))
+        
+        # Получение колонок из описания курсора
+        columns = [column[0] for column in cursor.description]
+        
+        # Fetch всех строк
+        rows = cursor.fetchall()
+        
+        # Создание DataFrame
+        df = pd.DataFrame.from_records(rows, columns=columns)
+        
+        logger.info(f"Успешно загружено {len(df)} записей")
+        logger.info(f"Колонки датафрейма: {list(df.columns)}")
+        
+        return df
+        
+    except pyodbc.Error as e:
+        logger.error(f"Ошибка базы данных: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке данных: {e}")
+        raise
+    finally:
+        if conn:
+            conn.close()
+            logger.info("Соединение с базой данных закрыто")
+
+
+def save_predictions_to_sql(df: pd.DataFrame, table_name: str = 'SNS_ML_Predictions') -> None:
+    """
+    Сохраняет датафрейм с предсказаниями в таблицу SQL Server.
+    Таблица предварительно пересоздаётся через DROP/CREATE.
+    
+    Args:
+        df: Датафрейм с данными для сохранения (включая Predicted_Category_Sum и Prediction_Confidence)
+        table_name: Имя таблицы в БД (по умолчанию 'SNS_ML_Predictions')
+        
+    Raises:
+        Exception: При ошибке записи в БД
+    """
+    logger.info(f"Сохранение предсказаний в таблицу {table_name} на SQL Server")
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # DROP существующей таблицы
+        drop_query = f"IF OBJECT_ID('dbo.{table_name}', 'U') IS NOT NULL DROP TABLE dbo.{table_name}"
+        logger.info(f"Удаление существующей таблицы: {drop_query}")
+        cursor.execute(drop_query)
+        conn.commit()
+        
+        # CREATE новой таблицы на основе типов данных DataFrame
+        column_definitions = []
+        for col in df.columns:
+            dtype = df[col].dtype
+            if pd.api.types.is_integer_dtype(dtype):
+                sql_type = "BIGINT"
+            elif pd.api.types.is_float_dtype(dtype):
+                sql_type = "FLOAT"
+            elif pd.api.types.is_datetime64_any_dtype(dtype):
+                sql_type = "DATETIME"
+            else:
+                sql_type = "NVARCHAR(MAX)"
+            column_definitions.append(f"[{col}] {sql_type}")
+        
+        create_query = f"CREATE TABLE dbo.{table_name} (\n    " + ",\n    ".join(column_definitions) + "\n)"
+        logger.info(f"Создание новой таблицы: {create_query}")
+        cursor.execute(create_query)
+        conn.commit()
+        
+        # Вставка данных
+        logger.info(f"Вставка {len(df)} записей в таблицу {table_name}")
+        
+        columns = list(df.columns)
+        columns_str = ", ".join([f"[{col}]" for col in columns])
+        placeholders = ", ".join(["?" for _ in columns])
+        insert_query = f"INSERT INTO dbo.{table_name} ({columns_str}) VALUES ({placeholders})"
+        
+        # Вставляем данные batches
+        batch_size = 10000
+        total_rows = len(df)
+        
+        for start_idx in range(0, total_rows, batch_size):
+            end_idx = min(start_idx + batch_size, total_rows)
+            batch = df.iloc[start_idx:end_idx]
+            
+            # Преобразуем NaN в None для совместимости с pyodbc
+            batch_data = []
+            for _, row in batch.iterrows():
+                row_data = tuple([None if pd.isna(val) else val for val in row.values])
+                batch_data.append(row_data)
+            
+            cursor.executemany(insert_query, batch_data)
+            conn.commit()
+            logger.info(f"Вставлено записей: {end_idx}/{total_rows}")
+        
+        logger.info(f"Предсказания успешно сохранены в таблицу {table_name}")
+        
+    except pyodbc.Error as e:
+        logger.error(f"Ошибка базы данных: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении данных: {e}")
+        raise
+    finally:
+        if conn:
+            conn.close()
+            logger.info("Соединение с базой данных закрыто")
+
+
 # Пример использования
 if __name__ == "__main__":
     # Установка дат: @EndDate = текущая дата - 1 день, @StartDate = @EndDate - 1 год
