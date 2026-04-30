@@ -288,6 +288,9 @@ def add_visit_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate', poin
     2. DaysNextVisit - количество дней до следующего VisitDate для PointID. 
        Если определить не удалось (последнее посещение), то = 7
     
+    Расчет ведется по уникальным датам для каждой точки, чтобы корректно обрабатывать
+    случаи, когда для одной точки есть несколько записей с одинаковым VisitDate.
+    
     Args:
         df: Исходный датафрейм
         visit_date_col: Название колонки с датой посещения (по умолчанию 'VisitDate')
@@ -305,30 +308,29 @@ def add_visit_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate', poin
     if not pd.api.types.is_datetime64_any_dtype(result_df[visit_date_col]):
         result_df[visit_date_col] = pd.to_datetime(result_df[visit_date_col])
     
-    # Инициализируем колонки значением по умолчанию 7
-    result_df['DaysLastVisit'] = 7
-    result_df['DaysNextVisit'] = 7
+    # Создаем датафрейм с уникальными комбинациями PointID и VisitDate
+    unique_visits = result_df[[point_id_col, visit_date_col]].drop_duplicates().copy()
     
-    # Группируем по PointID и сортируем по VisitDate
-    for point_id, group in result_df.groupby(point_id_col):
-        # Получаем индексы строк в группе, отсортированные по дате
-        sorted_group = group.sort_values(visit_date_col)
-        indices = sorted_group.index.tolist()
-        dates = sorted_group[visit_date_col].tolist()
-        
-        # Рассчитываем DaysLastVisit и DaysNextVisit для каждой строки в группе
-        for i in range(len(indices)):
-            idx = indices[i]
-            
-            # DaysLastVisit: разница с предыдущей датой
-            if i > 0:
-                delta_last = (dates[i] - dates[i-1]).days
-                result_df.loc[idx, 'DaysLastVisit'] = delta_last
-            
-            # DaysNextVisit: разница со следующей датой
-            if i < len(indices) - 1:
-                delta_next = (dates[i+1] - dates[i]).days
-                result_df.loc[idx, 'DaysNextVisit'] = delta_next
+    # Сортируем по PointID и VisitDate для корректного расчета shift
+    unique_visits = unique_visits.sort_values([point_id_col, visit_date_col]).reset_index(drop=True)
+    
+    # Рассчитываем предыдущую и следующую дату для каждой точки с помощью groupby + shift
+    unique_visits['PrevVisitDate'] = unique_visits.groupby(point_id_col)[visit_date_col].shift(1)
+    unique_visits['NextVisitDate'] = unique_visits.groupby(point_id_col)[visit_date_col].shift(-1)
+    
+    # Вычисляем разницу в днях (векторизированно)
+    unique_visits['DaysLastVisit'] = (unique_visits[visit_date_col] - unique_visits['PrevVisitDate']).dt.days
+    unique_visits['DaysNextVisit'] = (unique_visits['NextVisitDate'] - unique_visits[visit_date_col]).dt.days
+    
+    # Заполняем NaN значениями по умолчанию (7) для первого и последнего визита
+    unique_visits['DaysLastVisit'] = unique_visits['DaysLastVisit'].fillna(7).astype(int)
+    unique_visits['DaysNextVisit'] = unique_visits['DaysNextVisit'].fillna(7).astype(int)
+    
+    # Удаляем вспомогательные колонки
+    unique_visits = unique_visits.drop(columns=['PrevVisitDate', 'NextVisitDate'])
+    
+    # Merge с исходным датафреймом для присваивания значений всем строкам
+    result_df = result_df.merge(unique_visits, on=[point_id_col, visit_date_col], how='left')
     
     logger.info(f"Успешно добавлено 2 признака посещений")
     logger.info(f"Новые колонки: ['DaysLastVisit', 'DaysNextVisit']")
