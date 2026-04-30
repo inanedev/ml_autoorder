@@ -3,6 +3,7 @@ import numpy as np
 from datetime import datetime, date, timedelta
 from typing import List, Tuple, Optional
 import logging
+from sns_ml_fetch_data import fetch_raw_data
 
 # Настройка логгирования
 logging.basicConfig(
@@ -247,6 +248,35 @@ def add_calendar_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate') -
     logger.info(f"Новые колонки: {['DayOfWeek', 'IsFriday', 'IsMonday', 'DaysToNextHoliday', 'DaysSinceLastHoliday', 'IsPreHoliday', 'IsPostHoliday', 'Quarter', 'Month', 'WeekOfYear', 'DayOfMonth', 'DayOfYear']}")
     
     return result_df
+
+
+def load_and_add_features(start_date: date, end_date: date) -> pd.DataFrame:
+    """
+    Загружает сырые данные из БД с помощью fetch_raw_data и добавляет к ним календарные признаки.
+    
+    Args:
+        start_date: Начальная дата периода выгрузки (включительно)
+        end_date: Конечная дата периода выгрузки (не включительно)
+        
+    Returns:
+        pd.DataFrame: Датафрейм с сырыми данными и добавленными календарными признаками
+        
+    Raises:
+        Exception: При ошибке загрузки данных или добавления признаков
+    """
+    logger.info(f"Загрузка данных за период {start_date} - {end_date}")
+    
+    # Получаем сырые данные через sns_ml_fetch_data
+    df = fetch_raw_data(start_date, end_date)
+    
+    logger.info(f"Загружено {len(df)} записей")
+    
+    # Добавляем календарные признаки
+    df_with_features = add_calendar_features(df)
+    
+    logger.info("Данные успешно загружены и обогащены признаками")
+    
+    return df_with_features
 
 
 # Пример использования
