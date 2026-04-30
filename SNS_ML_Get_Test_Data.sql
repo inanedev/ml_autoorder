@@ -389,17 +389,31 @@ BEGIN
                 DATEPART(WEEKDAY, @TargetDate) AS CurrentDayOfWeek,
                 -- Разбиваем строку дней (например '1,3,5') на отдельные дни недели
                 -- И находим минимальный день недели, который больше текущего
+                -- Используем XML метод вместо STRING_SPLIT для совместимости с SQL Server 2012
                 (
-                    SELECT MIN(CAST(value AS INT))
-                    FROM STRING_SPLIT(pf.VisitDays, ',')
-                    WHERE TRY_CAST(value AS INT) IS NOT NULL
-                      AND CAST(value AS INT) > DATEPART(WEEKDAY, @TargetDate)
+                    SELECT MIN(CAST(x.value AS INT))
+                    FROM (
+                        SELECT t.c.value('.', 'INT') AS value
+                        FROM (
+                            SELECT CAST('<n>' + REPLACE(pf.VisitDays, ',', '</n><n>') + '</n>' AS XML) AS xmldata
+                        ) AS a
+                        CROSS APPLY xmldata.nodes('/n') AS t(c)
+                    ) x
+                    WHERE x.value IS NOT NULL
+                      AND x.value > DATEPART(WEEKDAY, @TargetDate)
                 ) AS NextVisitDayInWeek,
                 -- Если нет дня в текущей неделе, ищем в следующей (минимальный день из списка)
+                -- Используем XML метод вместо STRING_SPLIT для совместимости с SQL Server 2012
                 (
-                    SELECT MIN(CAST(value AS INT))
-                    FROM STRING_SPLIT(pf.VisitDays, ',')
-                    WHERE TRY_CAST(value AS INT) IS NOT NULL
+                    SELECT MIN(CAST(x.value AS INT))
+                    FROM (
+                        SELECT t.c.value('.', 'INT') AS value
+                        FROM (
+                            SELECT CAST('<n>' + REPLACE(pf.VisitDays, ',', '</n><n>') + '</n>' AS XML) AS xmldata
+                        ) AS a
+                        CROSS APPLY xmldata.nodes('/n') AS t(c)
+                    ) x
+                    WHERE x.value IS NOT NULL
                 ) AS MinVisitDayInWeek
             FROM #PointFeatures pf
         )
