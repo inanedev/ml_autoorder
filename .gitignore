@@ -1,1 +1,28 @@
-Nothing needs to be added to .gitignore since only a Python source file (`sns_ml_add_features.py`) was added, and no build artifacts, dependencies, or temporary files are present in the changes.
+```gitignore
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
+.venv/
+venv/
+.env
+.env.local
+*.env.*
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+
+# Editors
+.vscode/
+.idea/
+
+# Build artifacts
+dist/
+build/
+target/
+```
