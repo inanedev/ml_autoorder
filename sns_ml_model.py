@@ -135,7 +135,7 @@ def train_catboost_model(X: pd.DataFrame,
         'learning_rate': learning_rate,
         'loss_function': 'MAE',  # MAE более устойчив к выбросам
         'eval_metric': 'MAE',
-        'verbose': 200,  # Вывод логов каждые 200 итераций
+        'verbose': 200,
         'cat_features': categorical_features if categorical_features else None,
         'random_seed': random_seed,
         'early_stopping_rounds': 50
@@ -198,7 +198,7 @@ def train_catboost_model(X: pd.DataFrame,
     train_pool = Pool(X, y, cat_features=categorical_features if categorical_features else None)
     
     final_model = CatBoostRegressor(**base_params)
-    final_model.fit(train_pool, verbose=True)
+    final_model.fit(train_pool, verbose=200)
     
     logger.info("Модель успешно обучена!")
     
@@ -247,26 +247,24 @@ def main():
     start_date = end_date - timedelta(days=365)
     
     # Параметры из командной строки
-    # Использование: python sns_ml_model.py [start_date] [end_date] [model_path] [--no-predict]
-    # По умолчанию прогнозирование выполняется. Для отключения используйте флаг --no-predict
-    no_predict = '--no-predict' in sys.argv or '-np' in sys.argv
-    predict_mode = not no_predict
+    # Использование: python sns_ml_model.py [start_date] [end_date] [model_path] [--predict]
+    predict_mode = '--predict' in sys.argv or '-p' in sys.argv
     
-    if len(sys.argv) > 1 and sys.argv[1] not in ['--no-predict', '-np']:
+    if len(sys.argv) > 1 and sys.argv[1] not in ['--predict', '-p']:
         try:
             start_date = datetime.strptime(sys.argv[1], '%Y-%m-%d').date()
         except ValueError:
             logger.error(f"Неверный формат даты start_date: {sys.argv[1]}. Используйте YYYY-MM-DD")
             sys.exit(1)
     
-    if len(sys.argv) > 2 and sys.argv[2] not in ['--no-predict', '-np']:
+    if len(sys.argv) > 2 and sys.argv[2] not in ['--predict', '-p']:
         try:
             end_date = datetime.strptime(sys.argv[2], '%Y-%m-%d').date()
         except ValueError:
             logger.error(f"Неверный формат даты end_date: {sys.argv[2]}. Используйте YYYY-MM-DD")
             sys.exit(1)
     
-    model_path = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] not in ['--no-predict', '-np'] else 'catboost_model.cbm'
+    model_path = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] not in ['--predict', '-p'] else 'catboost_model.cbm'
     
     logger.info(f"Период обучения: {start_date} - {end_date}")
     logger.info(f"Путь сохранения модели: {model_path}")
@@ -353,7 +351,7 @@ def main():
         logger.info("Обучение модели завершено успешно!")
         logger.info("=" * 60)
         
-        # Шаг 6: Прогнозирование на тестовых данных (выполняется по умолчанию, если не указан флаг --no-predict)
+        # Шаг 6: Прогнозирование на тестовых данных (если указан флаг --predict)
         if predict_mode:
             logger.info("\n" + "=" * 60)
             logger.info("Шаг 6: Прогнозирование на тестовых данных")
