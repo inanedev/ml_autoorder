@@ -338,6 +338,67 @@ def add_visit_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate', poin
     return result_df
 
 
+def add_category_sales_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate', 
+                                 point_id_col: str = 'PointID', 
+                                 category_id_col: str = 'CategoryID') -> pd.DataFrame:
+    """
+    Добавляет признаки, связанные с продажами категорий в точках.
+    
+    Добавляемые признаки:
+    1. DaysLastSalesCategory - количество дней с момента последней продажи категории в точку.
+       Рассчитывается для комбинации VisitDate - PointID - CategoryID как дней с момента 
+       последней продажи этой категории в эту точку.
+       Если определить не удалось (первая продажа категории в точку), то = 7
+    
+    Расчет ведется по уникальным датам для каждой комбинации PointID-CategoryID, чтобы 
+    корректно обрабатывать случаи, когда для одной точки и категории есть несколько записей 
+    с одинаковым VisitDate.
+    
+    Args:
+        df: Исходный датафрейм
+        visit_date_col: Название колонки с датой посещения (по умолчанию 'VisitDate')
+        point_id_col: Название колонки с идентификатором точки (по умолчанию 'PointID')
+        category_id_col: Название колонки с идентификатором категории (по умолчанию 'CategoryID')
+        
+    Returns:
+        Датафрейм с добавленными признаками
+    """
+    logger.info(f"Добавление признаков продаж категорий на основе колонок '{visit_date_col}', '{point_id_col}' и '{category_id_col}'")
+    
+    # Создаем копию датафрейма, чтобы не модифицировать исходный
+    result_df = df.copy()
+    
+    # Преобразуем колонку с датой в формат datetime, если это еще не сделано
+    if not pd.api.types.is_datetime64_any_dtype(result_df[visit_date_col]):
+        result_df[visit_date_col] = pd.to_datetime(result_df[visit_date_col])
+    
+    # Создаем датафрейм с уникальными комбинациями PointID, CategoryID и VisitDate
+    unique_sales = result_df[[point_id_col, category_id_col, visit_date_col]].drop_duplicates().copy()
+    
+    # Сортируем по PointID, CategoryID и VisitDate для корректного расчета shift
+    unique_sales = unique_sales.sort_values([point_id_col, category_id_col, visit_date_col]).reset_index(drop=True)
+    
+    # Рассчитываем предыдущую дату продажи для каждой комбинации PointID-CategoryID с помощью groupby + shift
+    unique_sales['PrevSaleDate'] = unique_sales.groupby([point_id_col, category_id_col])[visit_date_col].shift(1)
+    
+    # Вычисляем разницу в днях (векторизированно)
+    unique_sales['DaysLastSalesCategory'] = (unique_sales[visit_date_col] - unique_sales['PrevSaleDate']).dt.days
+    
+    # Заполняем NaN значениями по умолчанию (7) для первой продажи категории в точку
+    unique_sales['DaysLastSalesCategory'] = unique_sales['DaysLastSalesCategory'].fillna(7).astype(int)
+    
+    # Удаляем вспомогательные колонки
+    unique_sales = unique_sales.drop(columns=['PrevSaleDate'])
+    
+    # Merge с исходным датафреймом для присваивания значений всем строкам
+    result_df = result_df.merge(unique_sales, on=[point_id_col, category_id_col, visit_date_col], how='left')
+    
+    logger.info(f"Успешно добавлен 1 признак продаж категорий")
+    logger.info(f"Новые колонки: ['DaysLastSalesCategory']")
+    
+    return result_df
+
+
 def save_to_sql_server(df: pd.DataFrame, table_name: str = 'SNS_ML_features') -> None:
     """
     Сохраняет датафрейм в таблицу SQL Server 2012.
@@ -427,14 +488,16 @@ def save_to_sql_server(df: pd.DataFrame, table_name: str = 'SNS_ML_features') ->
 
 def load_and_add_features(start_date: date, end_date: date) -> pd.DataFrame:
     """
-    Загружает сырые данные из БД с помощью fetch_raw_data и добавляет к ним календарные признаки и признаки посещений.
+    Загружает сырые данные из БД с помощью fetch_raw_data и добавляет к ним календарные признаки, 
+    признаки посещений и признаки продаж категорий.
     
     Args:
         start_date: Начальная дата периода выгрузки (включительно)
         end_date: Конечная дата периода выгрузки (не включительно)
         
     Returns:
-        pd.DataFrame: Датафрейм с сырыми данными и добавленными календарными признаками и признаками посещений
+        pd.DataFrame: Датафрейм с сырыми данными и добавленными календарными признаками, 
+                      признаками посещений и признаками продаж категорий
         
     Raises:
         Exception: При ошибке загрузки данных или добавления признаков
@@ -451,6 +514,9 @@ def load_and_add_features(start_date: date, end_date: date) -> pd.DataFrame:
     
     # Добавляем признаки посещений
     df_with_features = add_visit_features(df_with_features)
+    
+    # Добавляем признаки продаж категорий
+    df_with_features = add_category_sales_features(df_with_features)
     
     logger.info("Данные успешно загружены и обогащены признаками")
     
