@@ -8,12 +8,13 @@ GO
  * Назначение:
  *   Формирование полного набора признаков для прогнозирования продаж
  *   на уровне точка x категория x дата с использованием исторических данных
+ *   Возвращает ровно те же столбцы и по той же логике, что и скрипт sns_ml_add_features.py
  * 
  * Параметры:
- *   @TargetDate DATE - Дата, на которую собираются фичи (прогноз будет для этой даты)
+ *   @TargetDate DATE - Дата, на которую собираются фичи
  * 
  * Возвращаемые колонки:
- *   === Базовые данные ===
+ *   === Базовые данные (из SNS_ML_Get_Raw_Data) ===
  *   VisitDate                     - Дата прогноза (TargetDate)
  *   PointID                       - Идентификатор точки продаж
  *   CategoryID                    - Идентификатор категории товара
@@ -24,50 +25,39 @@ GO
  *   Lon                           - Долгота точек продаж
  *   MicroRegionID                 - Идентификатор микрорегиона (сетка 3x3 км)
  *   
- *   === Календарные фичи ===
- *   day_of_week                   - День недели (0-понедельник, 6-воскресенье)
- *   is_weekend                    - Флаг выходного дня
- *   is_monday                     - Флаг понедельника
- *   is_friday                     - Флаг пятницы
- *   is_saturday                   - Флаг субботы
- *   is_sunday                     - Флаг воскресенья
- *   is_holiday                    - Флаг праздника России
- *   is_pre_holiday                - Флаг предпраздничного дня
- *   is_post_holiday               - Флаг дня после праздника
- *   month                         - Месяц года
- *   quarter                       - Квартал года
- *   week_of_year                  - Неделя года
- *   is_month_start                - Флаг начала месяца
- *   is_month_end                  - Флаг конца месяца
- *   day_of_month                  - День месяца
- *   day_of_year                   - День года
- *   days_to_holiday               - Дней до ближайшего праздника
- *   days_from_holiday             - Дней от последнего праздника
+ *   === Календарные фичи (из add_calendar_features) ===
+ *   DayOfWeek                     - День недели (1-понедельник, 2-вторник, ..., 7-воскресенье)
+ *   IsFriday                      - Признак пятницы (1/0)
+ *   IsMonday                      - Признак понедельника (1/0)
+ *   DaysToNextHoliday             - Количество дней до начала ближайшего национального праздника
+ *   DaysSinceLastHoliday          - Количество дней с окончания ближайшего национального праздника
+ *   IsPreHoliday                  - Является ли день предпраздничным (до праздника 3 и менее дней)
+ *   IsPostHoliday                 - Является ли день постпраздничным (после праздника прошло 3 и менее дней)
+ *   Quarter                       - Номер квартала (1-4)
+ *   Month                         - Номер месяца (1-12)
+ *   WeekOfYear                    - Номер недели в году (1-53)
+ *   DayOfMonth                    - День месяца (1-31)
+ *   DayOfYear                     - День года (1-366)
+ *   isEndOfMonth                  - Бинарная фича: последние 3 дня месяца или первые 2 дня месяца, 
+ *                                   если до конца недели <= 2 дней, либо последняя суббота месяца
  *   
- *   === Фичи истории заказов ===
- *   Days_Since_Last_Order_Category - Дней назад точка брала эту категорию
- *   Days_Since_Last_Order_Total    - Дней назад был любой заказ от точки
- *   Average_Interval_Category      - Средний интервал между закупками категории
- *   Days_Until_Next_Visit          - Дней до следующего планового визита (на основе атрибута 644)
- *   Days_Until_Next_Order_Category - Дней до следующего заказа этой категории (исторический)
- *   Days_Until_Next_Order_Total    - Дней до следующего любого заказа от точки (исторический)
+ *   === Фичи посещений (из add_visit_features) ===
+ *   DaysLastVisit                 - Количество дней с предыдущего VisitDate для PointID (если первое посещение = 7)
+ *   DaysNextVisit                 - Количество дней до следующего VisitDate для PointID (если последнее посещение = 7)
  *   
- *   === Фичи продаж ===
- *   Prev_Order_Amount_Category    - Сумма предыдущего заказа по категории
- *   SMA_3_Category                - Скользящее среднее за 3 дня по категории
- *   SMA_7_Category                - Скользящее среднее за 7 дней по категории
- *   SMA_30_Category               - Скользящее среднее за 30 дней по категории
- *   Momentum_Category             - Отношение среднего чека за неделю к месяцу
- *   StdDev_Category               - Скользящее стандартное отклонение
+ *   === Фичи продаж категорий (из add_category_sales_features) ===
+ *   DaysLastSalesCategory         - Количество дней с момента последней продажи категории в точку (если первая продажа = 7)
+ *   
+ *   === Фичи последней продажи категории (из add_last_sales_category_feature) ===
+ *   LastSalesCategory             - Сумма последней продажи категории в точку (если первая продажа = 0)
  * 
  * Логика работы:
  *   1. Выбираются все активные точки продаж
  *   2. Отбираются только категории, которые продавались хоть одному клиенту за последний месяц (до @TargetDate)
  *   3. Для каждой точки формируются признаки из SNS_ML_Get_Raw_Data для отобранных категорий
- *   4. Добавляются календарные фичи для TargetDate
- *   5. Рассчитываются фичи истории заказов по данным ДО TargetDate
- *   6. Рассчитываются фичи продаж по данным ДО TargetDate
- *   7. SumRoubles НЕ включается в результат (это целевая переменная для предсказания)
+ *   4. Добавляются календарные фичи для TargetDate (аналогично add_calendar_features)
+ *   5. Рассчитываются фичи истории посещений (аналогично add_visit_features)
+ *   6. Рассчитываются фичи продаж категорий (аналогично add_category_sales_features и add_last_sales_category_feature)
  * 
  * Пример использования:
  *   EXEC dbo.SNS_ML_Get_Test_Data @TargetDate = '2024-01-15';
@@ -94,7 +84,7 @@ BEGIN
             RETURN -1;
         END
 
-        -- Установка первого дня недели = понедельник (как в Python .dt.dayofweek)
+        -- Установка первого дня недели = понедельник (как в Python .weekday() + 1)
         SET DATEFIRST 1;
 
         -- Шаг сетки для 3 км: 3 / 111.0 ≈ 0.027 градуса
@@ -111,7 +101,7 @@ BEGIN
         
         CREATE CLUSTERED INDEX IX_ItemMap_iid ON #ItemMap (iid);
 
-        -- 2. Признаки активных точек + Расчет Микрорегиона (3x3 км) + Атрибут 644 (плановые дни визитов)
+        -- 2. Признаки активных точек + Расчет Микрорегиона (3x3 км)
         IF OBJECT_ID('tempdb..#PointFeatures') IS NOT NULL DROP TABLE #PointFeatures;
         SELECT 
             f.fid AS PointID, 
@@ -124,9 +114,6 @@ BEGIN
             -- Атрибуты
             ISNULL(MAX(CASE WHEN fa.attrid = 602 THEN fa.attrtext END), 'Unknown') AS PointClass,
             ISNULL(MAX(CASE WHEN fa.attrid = 555 THEN fa.attrtext END), 'Unknown') AS PointType,
-            
-            -- Атрибут 644 - плановые дни визитов (формат "1,3,5" где 1=понедельник, 7=воскресенье)
-            ISNULL(MAX(CASE WHEN fa.attrid = 644 THEN fa.attrtext END), '') AS PlannedVisitDays,
             
             -- Расчет MicroRegionID (Сетка 3x3 км)
             CAST(
@@ -161,7 +148,7 @@ BEGIN
         -- 4. Полный грид: все активные точки x все категории для одной даты
         IF OBJECT_ID('tempdb..#FullGrid') IS NOT NULL DROP TABLE #FullGrid;
         SELECT 
-            @TargetDate AS VisitDate,
+            CAST(@TargetDate AS DATE) AS VisitDate,
             pf.PointID,
             c.CategoryID,
             pf.BranchID,
@@ -169,8 +156,7 @@ BEGIN
             pf.PointType,
             pf.Lat,
             pf.Lon,
-            pf.MicroRegionID,
-            pf.PlannedVisitDays
+            pf.MicroRegionID
         INTO #FullGrid
         FROM #PointFeatures pf
         CROSS JOIN #Categories c;
@@ -178,6 +164,21 @@ BEGIN
         CREATE CLUSTERED INDEX IX_FG_DatePointCat ON #FullGrid (VisitDate, PointID, CategoryID);
 
         -- 5. История продаж для расчета лаговых фичей (строго до @TargetDate)
+        -- Для add_visit_features: история визитов по точкам
+        IF OBJECT_ID('tempdb..#VisitHistory') IS NOT NULL DROP TABLE #VisitHistory;
+        SELECT 
+            CAST(o.orDate AS DATE) AS VisitDate, 
+            o.mfID AS PointID
+        INTO #VisitHistory
+        FROM DS_Orders o 
+        WHERE o.orType = 1 
+          AND o.orDate < @TargetDate
+        GROUP BY CAST(o.orDate AS DATE), o.mfID;
+        
+        CREATE CLUSTERED INDEX IX_VH_DatePoint ON #VisitHistory (VisitDate, PointID);
+        CREATE NONCLUSTERED INDEX IX_VH_Point ON #VisitHistory (PointID, VisitDate);
+
+        -- 6. История продаж по категориям для DaysLastSalesCategory и LastSalesCategory
         IF OBJECT_ID('tempdb..#SalesHistory') IS NOT NULL DROP TABLE #SalesHistory;
         SELECT 
             CAST(o.orDate AS DATE) AS VisitDate, 
@@ -195,21 +196,7 @@ BEGIN
         CREATE CLUSTERED INDEX IX_SH_DatePointCat ON #SalesHistory (VisitDate, PointID, CategoryID);
         CREATE NONCLUSTERED INDEX IX_SH_PointCat ON #SalesHistory (PointID, CategoryID, VisitDate);
 
-        -- 6. История заказов по точкам (для Days_Since_Last_Order_Total)
-        IF OBJECT_ID('tempdb..#OrderHistory') IS NOT NULL DROP TABLE #OrderHistory;
-        SELECT 
-            CAST(o.orDate AS DATE) AS VisitDate, 
-            o.mfID AS PointID
-        INTO #OrderHistory
-        FROM DS_Orders o 
-        WHERE o.orType = 1 
-          AND o.orDate < @TargetDate
-        GROUP BY CAST(o.orDate AS DATE), o.mfID;
-        
-        CREATE CLUSTERED INDEX IX_OH_DatePoint ON #OrderHistory (VisitDate, PointID);
-        CREATE NONCLUSTERED INDEX IX_OH_Point ON #OrderHistory (PointID, VisitDate);
-
-        -- 7. Основной результат с базовыми данными и календарными фичами (без SumRoubles!)
+        -- 7. Основной результат с базовыми данными и календарными фичами
         IF OBJECT_ID('tempdb..#ResultBase') IS NOT NULL DROP TABLE #ResultBase;
         SELECT 
             fg.VisitDate,
@@ -221,55 +208,50 @@ BEGIN
             fg.Lat,
             fg.Lon,
             fg.MicroRegionID,
-            fg.PlannedVisitDays,
             
-            -- Календарные фичи
-            (DATEPART(WEEKDAY, fg.VisitDate) - 1) % 7 AS day_of_week,  -- 0=Monday, 6=Sunday (при DATEFIRST 1)
-            CASE WHEN (DATEPART(WEEKDAY, fg.VisitDate) - 1) % 7 IN (5, 6) THEN 1 ELSE 0 END AS is_weekend,
-            CASE WHEN (DATEPART(WEEKDAY, fg.VisitDate) - 1) % 7 = 0 THEN 1 ELSE 0 END AS is_monday,
-            CASE WHEN (DATEPART(WEEKDAY, fg.VisitDate) - 1) % 7 = 4 THEN 1 ELSE 0 END AS is_friday,
-            CASE WHEN (DATEPART(WEEKDAY, fg.VisitDate) - 1) % 7 = 5 THEN 1 ELSE 0 END AS is_saturday,
-            CASE WHEN (DATEPART(WEEKDAY, fg.VisitDate) - 1) % 7 = 6 THEN 1 ELSE 0 END AS is_sunday,
+            -- Календарные фичи (аналог add_calendar_features)
+            -- DayOfWeek: 1-понедельник, 7-воскресенье (Python: weekday() + 1)
+            DATEPART(WEEKDAY, fg.VisitDate) AS DayOfWeek,
             
-            -- Праздники России (фиксированные даты)
+            -- IsFriday: пятница = 5
+            CASE WHEN DATEPART(WEEKDAY, fg.VisitDate) = 5 THEN 1 ELSE 0 END AS IsFriday,
+            
+            -- IsMonday: понедельник = 1
+            CASE WHEN DATEPART(WEEKDAY, fg.VisitDate) = 1 THEN 1 ELSE 0 END AS IsMonday,
+            
+            -- Quarter
+            DATEPART(QUARTER, fg.VisitDate) AS Quarter,
+            
+            -- Month
+            MONTH(fg.VisitDate) AS Month,
+            
+            -- WeekOfYear (ISO week)
+            DATEPART(WEEK, fg.VisitDate) AS WeekOfYear,
+            
+            -- DayOfMonth
+            DAY(fg.VisitDate) AS DayOfMonth,
+            
+            -- DayOfYear
+            DATEPART(DAYOFYEAR, fg.VisitDate) AS DayOfYear,
+            
+            -- isEndOfMonth: последние 3 дня месяца ИЛИ (первые 2 дня месяца И до конца недели <= 2 дней) ИЛИ последняя суббота месяца
+            CASE 
+                WHEN DAY(fg.VisitDate) >= DAY(EOMONTH(fg.VisitDate)) - 2 THEN 1
+                WHEN DAY(fg.VisitDate) <= 2 AND DATEPART(WEEKDAY, fg.VisitDate) >= 5 THEN 1
+                WHEN DAY(fg.VisitDate) + 7 > DAY(EOMONTH(fg.VisitDate)) AND DATEPART(WEEKDAY, fg.VisitDate) = 6 THEN 1
+                ELSE 0 
+            END AS isEndOfMonth,
+            
+            -- Праздники России (фиксированные даты, как в get_russia_holidays)
             CASE WHEN (MONTH(fg.VisitDate) = 1 AND DAY(fg.VisitDate) IN (1,2,3,4,5,6,7,8))
                       OR (MONTH(fg.VisitDate) = 2 AND DAY(fg.VisitDate) = 23)
                       OR (MONTH(fg.VisitDate) = 3 AND DAY(fg.VisitDate) = 8)
                       OR (MONTH(fg.VisitDate) = 5 AND DAY(fg.VisitDate) IN (1,9))
                       OR (MONTH(fg.VisitDate) = 6 AND DAY(fg.VisitDate) = 12)
                       OR (MONTH(fg.VisitDate) = 11 AND DAY(fg.VisitDate) = 4)
-                 THEN 1 ELSE 0 END AS is_holiday,
+                 THEN 1 ELSE 0 END AS IsHoliday,
             
-            -- Предпраздничный день
-            CASE WHEN (MONTH(DATEADD(DAY, 1, fg.VisitDate)) = 1 AND DAY(DATEADD(DAY, 1, fg.VisitDate)) IN (1,2,3,4,5,6,7,8))
-                      OR (MONTH(DATEADD(DAY, 1, fg.VisitDate)) = 2 AND DAY(DATEADD(DAY, 1, fg.VisitDate)) = 23)
-                      OR (MONTH(DATEADD(DAY, 1, fg.VisitDate)) = 3 AND DAY(DATEADD(DAY, 1, fg.VisitDate)) = 8)
-                      OR (MONTH(DATEADD(DAY, 1, fg.VisitDate)) = 5 AND DAY(DATEADD(DAY, 1, fg.VisitDate)) IN (1,9))
-                      OR (MONTH(DATEADD(DAY, 1, fg.VisitDate)) = 6 AND DAY(DATEADD(DAY, 1, fg.VisitDate)) = 12)
-                      OR (MONTH(DATEADD(DAY, 1, fg.VisitDate)) = 11 AND DAY(DATEADD(DAY, 1, fg.VisitDate)) = 4)
-                      OR (DATEPART(WEEKDAY, DATEADD(DAY, 1, fg.VisitDate)) - 1) % 7 IN (5, 6)
-                 THEN 1 ELSE 0 END AS is_pre_holiday,
-            
-            -- Постпраздничный день
-            CASE WHEN (MONTH(DATEADD(DAY, -1, fg.VisitDate)) = 1 AND DAY(DATEADD(DAY, -1, fg.VisitDate)) IN (1,2,3,4,5,6,7,8))
-                      OR (MONTH(DATEADD(DAY, -1, fg.VisitDate)) = 2 AND DAY(DATEADD(DAY, -1, fg.VisitDate)) = 23)
-                      OR (MONTH(DATEADD(DAY, -1, fg.VisitDate)) = 3 AND DAY(DATEADD(DAY, -1, fg.VisitDate)) = 8)
-                      OR (MONTH(DATEADD(DAY, -1, fg.VisitDate)) = 5 AND DAY(DATEADD(DAY, -1, fg.VisitDate)) IN (1,9))
-                      OR (MONTH(DATEADD(DAY, -1, fg.VisitDate)) = 6 AND DAY(DATEADD(DAY, -1, fg.VisitDate)) = 12)
-                      OR (MONTH(DATEADD(DAY, -1, fg.VisitDate)) = 11 AND DAY(DATEADD(DAY, -1, fg.VisitDate)) = 4)
-                      OR (DATEPART(WEEKDAY, DATEADD(DAY, -1, fg.VisitDate)) - 1) % 7 IN (5, 6)
-                 THEN 1 ELSE 0 END AS is_post_holiday,
-            
-            -- Дополнительные календарные фичи
-            MONTH(fg.VisitDate) AS month,
-            DATEPART(QUARTER, fg.VisitDate) AS quarter,
-            DATEPART(WEEK, fg.VisitDate) AS week_of_year,
-            CASE WHEN DAY(fg.VisitDate) = 1 THEN 1 ELSE 0 END AS is_month_start,
-            CASE WHEN DAY(EOMONTH(fg.VisitDate)) = DAY(fg.VisitDate) THEN 1 ELSE 0 END AS is_month_end,
-            DAY(fg.VisitDate) AS day_of_month,
-            DATEPART(DAYOFYEAR, fg.VisitDate) AS day_of_year,
-            
-            -- Дни до ближайшего праздника (расчет через подзапрос)
+            -- Дни до ближайшего праздника (DaysToNextHoliday)
             ISNULL((
                 SELECT TOP 1 DATEDIFF(DAY, fg.VisitDate, h.HolidayDate)
                 FROM (
@@ -290,9 +272,9 @@ BEGIN
                 ) h
                 WHERE h.HolidayDate > fg.VisitDate
                 ORDER BY h.HolidayDate ASC
-            ), 365) AS days_to_holiday,
+            ), 365) AS DaysToNextHoliday,
             
-            -- Дни от последнего праздника (расчет через подзапрос)
+            -- Дни от последнего праздника (DaysSinceLastHoliday)
             ISNULL((
                 SELECT TOP 1 DATEDIFF(DAY, h.HolidayDate, fg.VisitDate)
                 FROM (
@@ -313,253 +295,142 @@ BEGIN
                 ) h
                 WHERE h.HolidayDate < fg.VisitDate
                 ORDER BY h.HolidayDate DESC
-            ), 365) AS days_from_holiday
+            ), 365) AS DaysSinceLastHoliday,
+            
+            -- IsPreHoliday: до праздника 3 и менее дней
+            CASE WHEN ISNULL((
+                SELECT TOP 1 DATEDIFF(DAY, fg.VisitDate, h.HolidayDate)
+                FROM (
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 1) AS HolidayDate UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 2) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 3) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 4) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 5) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 6) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 7) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 2, 23) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 3, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 5, 1) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 5, 9) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 6, 12) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 11, 4) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 1) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 2) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 3) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 4) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 5) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 6) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 7) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 1, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 2, 23) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 3, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 5, 1) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 5, 9) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 6, 12) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)+1, 11, 4)
+                ) h
+                WHERE h.HolidayDate > fg.VisitDate
+                ORDER BY h.HolidayDate ASC
+            ), 365) <= 3 THEN 1 ELSE 0 END AS IsPreHoliday,
+            
+            -- IsPostHoliday: после праздника прошло 3 и менее дней
+            CASE WHEN ISNULL((
+                SELECT TOP 1 DATEDIFF(DAY, h.HolidayDate, fg.VisitDate)
+                FROM (
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 1) AS HolidayDate UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 2) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 3) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 4) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 5) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 6) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 7) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 1, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 2, 23) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 3, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 5, 1) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 5, 9) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 6, 12) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate), 11, 4) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 1) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 2) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 3) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 4) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 5) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 6) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 7) UNION ALL SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 1, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 2, 23) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 3, 8) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 5, 1) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 5, 9) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 6, 12) UNION ALL
+                    SELECT DATEFROMPARTS(YEAR(fg.VisitDate)-1, 11, 4)
+                ) h
+                WHERE h.HolidayDate < fg.VisitDate
+                ORDER BY h.HolidayDate DESC
+            ), 365) <= 3 THEN 1 ELSE 0 END AS IsPostHoliday
 
         INTO #ResultBase
         FROM #FullGrid fg;
         
         CREATE CLUSTERED INDEX IX_RB_DatePointCat ON #ResultBase (VisitDate, PointID, CategoryID);
 
-        -- 8. Расчет Days_Since_Last_Order_Category
-        IF OBJECT_ID('tempdb..#DaysSinceCategory') IS NOT NULL DROP TABLE #DaysSinceCategory;
-        SELECT 
-            rb.VisitDate,
-            rb.PointID,
-            rb.CategoryID,
-            DATEDIFF(DAY, MAX(sh.VisitDate), rb.VisitDate) AS Days_Since_Last_Order_Category
-        INTO #DaysSinceCategory
-        FROM #ResultBase rb
-        OUTER APPLY (
-            SELECT TOP 1 sh2.VisitDate
-            FROM #SalesHistory sh2
-            WHERE sh2.PointID = rb.PointID 
-              AND sh2.CategoryID = rb.CategoryID
-              AND sh2.VisitDate < rb.VisitDate
-            ORDER BY sh2.VisitDate DESC
-        ) sh
-        GROUP BY rb.VisitDate, rb.PointID, rb.CategoryID, sh.VisitDate;
-        
-        CREATE CLUSTERED INDEX IX_DSC_DatePointCat ON #DaysSinceCategory (VisitDate, PointID, CategoryID);
-
-        -- 9. Расчет Days_Since_Last_Order_Total
-        IF OBJECT_ID('tempdb..#DaysSinceTotal') IS NOT NULL DROP TABLE #DaysSinceTotal;
-        SELECT 
-            rb.VisitDate,
-            rb.PointID,
-            rb.CategoryID,
-            DATEDIFF(DAY, MAX(oh.VisitDate), rb.VisitDate) AS Days_Since_Last_Order_Total
-        INTO #DaysSinceTotal
-        FROM #ResultBase rb
-        OUTER APPLY (
-            SELECT TOP 1 oh2.VisitDate
-            FROM #OrderHistory oh2
-            WHERE oh2.PointID = rb.PointID
-              AND oh2.VisitDate < rb.VisitDate
-            ORDER BY oh2.VisitDate DESC
-        ) oh
-        GROUP BY rb.VisitDate, rb.PointID, rb.CategoryID, oh.VisitDate;
-        
-        CREATE CLUSTERED INDEX IX_DST_DatePointCat ON #DaysSinceTotal (VisitDate, PointID, CategoryID);
-
-        -- 10. Расчет Days_Until_Next_Visit (на основе атрибута 644 - плановые дни визитов)
-        -- Логика: определяем день недели TargetDate, находим ближайший плановый день из атрибута 644
-        IF OBJECT_ID('tempdb..#DaysUntilNextVisit') IS NOT NULL DROP TABLE #DaysUntilNextVisit;
-        SELECT 
-            rb.VisitDate,
-            rb.PointID,
-            rb.CategoryID,
-            rb.PlannedVisitDays,
-            DATEPART(WEEKDAY, rb.VisitDate) AS CurrentDayOfWeek
-        INTO #DaysUntilNextVisit
-        FROM #ResultBase rb;
-        
-        -- Добавляем колонку для результата
-        ALTER TABLE #DaysUntilNextVisit ADD Days_Until_Next_Visit INT NULL;
-        
-        -- Обновляем значения для точек с заполненным атрибутом 644
-        UPDATE dunv
-        SET Days_Until_Next_Visit = (
-            SELECT TOP 1 
-                CASE 
-                    WHEN PlannedDay > dunv.CurrentDayOfWeek THEN PlannedDay - dunv.CurrentDayOfWeek
-                    ELSE 7 - (dunv.CurrentDayOfWeek - PlannedDay)
-                END AS DaysUntil
-            FROM (
-                -- Разбиваем строку "1,3,5" на отдельные значения через XML (совместимо с SQL Server 2012)
-                SELECT TRY_CAST(x.value('.', 'VARCHAR(10)') AS INT) AS PlannedDay
-                FROM (
-                    SELECT CAST('<n>' + REPLACE(dunv.PlannedVisitDays, ',', '</n><n>') + '</n>' AS XML) AS XmlData
-                ) AS SplitXml
-                CROSS APPLY XmlData.nodes('/n') AS SplitValues(x)
-                WHERE TRY_CAST(x.value('.', 'VARCHAR(10)') AS INT) BETWEEN 1 AND 7
-            ) PlannedDays
-            WHERE PlannedDay IS NOT NULL
-            ORDER BY DaysUntil ASC
+        -- 8. Расчет DaysLastVisit и DaysNextVisit (аналог add_visit_features)
+        -- Сначала создаем таблицу с уникальными визитами и рассчитываем предыдущий/следующий визит
+        IF OBJECT_ID('tempdb..#VisitWithShifts') IS NOT NULL DROP TABLE #VisitWithShifts;
+        WITH UniqueVisits AS (
+            SELECT DISTINCT PointID, VisitDate
+            FROM #VisitHistory
+        ),
+        VisitShifts AS (
+            SELECT 
+                PointID,
+                VisitDate,
+                LAG(VisitDate) OVER (PARTITION BY PointID ORDER BY VisitDate) AS PrevVisitDate,
+                LEAD(VisitDate) OVER (PARTITION BY PointID ORDER BY VisitDate) AS NextVisitDate
+            FROM UniqueVisits
         )
-        FROM #DaysUntilNextVisit dunv
-        WHERE dunv.PlannedVisitDays IS NOT NULL AND dunv.PlannedVisitDays != '';
-        
-        -- Если Days_Until_Next_Visit не удалось определить, устанавливаем значение по умолчанию = 7
-        UPDATE #DaysUntilNextVisit
-        SET Days_Until_Next_Visit = 7
-        WHERE Days_Until_Next_Visit IS NULL;
-        
-        CREATE CLUSTERED INDEX IX_DUNV_DatePointCat ON #DaysUntilNextVisit (VisitDate, PointID, CategoryID);
-
-        -- 10a. Старый расчет Days_Until_Next_Order_Category (переименован для обратной совместимости)
-        IF OBJECT_ID('tempdb..#DaysUntilCategory') IS NOT NULL DROP TABLE #DaysUntilCategory;
         SELECT 
-            rb.VisitDate,
-            rb.PointID,
-            rb.CategoryID,
-            DATEDIFF(DAY, rb.VisitDate, MIN(sh.VisitDate)) AS Days_Until_Next_Order_Category
-        INTO #DaysUntilCategory
-        FROM #ResultBase rb
-        OUTER APPLY (
-            SELECT TOP 1 sh2.VisitDate
-            FROM #SalesHistory sh2
-            WHERE sh2.PointID = rb.PointID 
-              AND sh2.CategoryID = rb.CategoryID
-              AND sh2.VisitDate > rb.VisitDate
-            ORDER BY sh2.VisitDate ASC
-        ) sh
-        GROUP BY rb.VisitDate, rb.PointID, rb.CategoryID, sh.VisitDate;
+            vs.PointID,
+            vs.VisitDate,
+            ISNULL(DATEDIFF(DAY, vs.PrevVisitDate, vs.VisitDate), 7) AS DaysLastVisit,
+            ISNULL(DATEDIFF(DAY, vs.VisitDate, vs.NextVisitDate), 7) AS DaysNextVisit
+        INTO #VisitWithShifts
+        FROM VisitShifts vs;
         
-        CREATE CLUSTERED INDEX IX_DUC_DatePointCat ON #DaysUntilCategory (VisitDate, PointID, CategoryID);
+        CREATE CLUSTERED INDEX IX_VWS_PointDate ON #VisitWithShifts (PointID, VisitDate);
 
-        -- 11. Старый расчет Days_Until_Next_Order_Total (переименован для обратной совместимости)
-        IF OBJECT_ID('tempdb..#DaysUntilTotal') IS NOT NULL DROP TABLE #DaysUntilTotal;
-        SELECT 
-            rb.VisitDate,
-            rb.PointID,
-            rb.CategoryID,
-            DATEDIFF(DAY, rb.VisitDate, MIN(oh.VisitDate)) AS Days_Until_Next_Order_Total
-        INTO #DaysUntilTotal
-        FROM #ResultBase rb
-        OUTER APPLY (
-            SELECT TOP 1 oh2.VisitDate
-            FROM #OrderHistory oh2
-            WHERE oh2.PointID = rb.PointID
-              AND oh2.VisitDate > rb.VisitDate
-            ORDER BY oh2.VisitDate ASC
-        ) oh
-        GROUP BY rb.VisitDate, rb.PointID, rb.CategoryID, oh.VisitDate;
-        
-        CREATE CLUSTERED INDEX IX_DUT_DatePointCat ON #DaysUntilTotal (VisitDate, PointID, CategoryID);
-
-        -- 12. Расчет Average_Interval_Category (средний интервал между заказами категории)
-        IF OBJECT_ID('tempdb..#AvgInterval') IS NOT NULL DROP TABLE #AvgInterval;
-        WITH CategoryIntervals AS (
+        -- 9. Расчет DaysLastSalesCategory (аналог add_category_sales_features)
+        IF OBJECT_ID('tempdb..#CategorySalesWithShifts') IS NOT NULL DROP TABLE #CategorySalesWithShifts;
+        WITH UniqueCategorySales AS (
+            SELECT DISTINCT PointID, CategoryID, VisitDate
+            FROM #SalesHistory
+        ),
+        CategorySalesShifts AS (
             SELECT 
                 PointID,
                 CategoryID,
                 VisitDate,
-                LAG(VisitDate) OVER (PARTITION BY PointID, CategoryID ORDER BY VisitDate) AS PrevVisitDate
+                LAG(VisitDate) OVER (PARTITION BY PointID, CategoryID ORDER BY VisitDate) AS PrevSaleDate
+            FROM UniqueCategorySales
+        )
+        SELECT 
+            css.PointID,
+            css.CategoryID,
+            css.VisitDate,
+            ISNULL(DATEDIFF(DAY, css.PrevSaleDate, css.VisitDate), 7) AS DaysLastSalesCategory
+        INTO #CategorySalesWithShifts
+        FROM CategorySalesShifts css
+        WHERE css.PrevSaleDate IS NOT NULL;
+        
+        CREATE CLUSTERED INDEX IX_CSW_PointCatDate ON #CategorySalesWithShifts (PointID, CategoryID, VisitDate);
+
+        -- 10. Расчет LastSalesCategory (аналог add_last_sales_category_feature)
+        -- Агрегируем сумму за день для каждой комбинации PointID-CategoryID-VisitDate
+        IF OBJECT_ID('tempdb..#DailyCategorySales') IS NOT NULL DROP TABLE #DailyCategorySales;
+        WITH DailyAgg AS (
+            SELECT 
+                PointID,
+                CategoryID,
+                VisitDate,
+                SUM(SumRoubles) AS DailySum
             FROM #SalesHistory
+            GROUP BY PointID, CategoryID, VisitDate
+        ),
+        SalesWithLag AS (
+            SELECT 
+                PointID,
+                CategoryID,
+                VisitDate,
+                DailySum,
+                LAG(DailySum) OVER (PARTITION BY PointID, CategoryID ORDER BY VisitDate) AS LastSalesCategory
+            FROM DailyAgg
         )
         SELECT 
             PointID,
             CategoryID,
-            AVG(CAST(DATEDIFF(DAY, PrevVisitDate, VisitDate) AS FLOAT)) AS Average_Interval_Category
-        INTO #AvgInterval
-        FROM CategoryIntervals
-        WHERE PrevVisitDate IS NOT NULL
-        GROUP BY PointID, CategoryID;
+            VisitDate,
+            ISNULL(LastSalesCategory, 0) AS LastSalesCategory
+        INTO #DailyCategorySales
+        FROM SalesWithLag
+        WHERE LastSalesCategory IS NOT NULL;
         
-        CREATE CLUSTERED INDEX IX_AI_PointCat ON #AvgInterval (PointID, CategoryID);
+        CREATE CLUSTERED INDEX IX_DCS_PointCatDate ON #DailyCategorySales (PointID, CategoryID, VisitDate);
 
-        -- 11. Расчет фичей продаж: SMA и другие
-        IF OBJECT_ID('tempdb..#SalesFeatures') IS NOT NULL DROP TABLE #SalesFeatures;
-        SELECT 
-            rb.VisitDate,
-            rb.PointID,
-            rb.CategoryID,
-            
-            -- Prev_Order_Amount_Category (сумма предыдущего заказа)
-            ISNULL((
-                SELECT TOP 1 sh2.SumRoubles
-                FROM #SalesHistory sh2
-                WHERE sh2.PointID = rb.PointID 
-                  AND sh2.CategoryID = rb.CategoryID
-                  AND sh2.VisitDate < rb.VisitDate
-                ORDER BY sh2.VisitDate DESC
-            ), 0) AS Prev_Order_Amount_Category,
-            
-            -- SMA_3_Category
-            ISNULL((
-                SELECT AVG(CAST(sh2.SumRoubles AS FLOAT))
-                FROM #SalesHistory sh2
-                WHERE sh2.PointID = rb.PointID 
-                  AND sh2.CategoryID = rb.CategoryID
-                  AND sh2.VisitDate >= DATEADD(DAY, -3, rb.VisitDate)
-                  AND sh2.VisitDate < rb.VisitDate
-            ), 0) AS SMA_3_Category,
-            
-            -- SMA_7_Category
-            ISNULL((
-                SELECT AVG(CAST(sh2.SumRoubles AS FLOAT))
-                FROM #SalesHistory sh2
-                WHERE sh2.PointID = rb.PointID 
-                  AND sh2.CategoryID = rb.CategoryID
-                  AND sh2.VisitDate >= DATEADD(DAY, -7, rb.VisitDate)
-                  AND sh2.VisitDate < rb.VisitDate
-            ), 0) AS SMA_7_Category,
-            
-            -- SMA_30_Category
-            ISNULL((
-                SELECT AVG(CAST(sh2.SumRoubles AS FLOAT))
-                FROM #SalesHistory sh2
-                WHERE sh2.PointID = rb.PointID 
-                  AND sh2.CategoryID = rb.CategoryID
-                  AND sh2.VisitDate >= DATEADD(DAY, -30, rb.VisitDate)
-                  AND sh2.VisitDate < rb.VisitDate
-            ), 0) AS SMA_30_Category,
-            
-            -- Momentum_Category (отношение SMA_7 к SMA_30)
-            CASE 
-                WHEN (
-                    SELECT AVG(CAST(sh2.SumRoubles AS FLOAT))
-                    FROM #SalesHistory sh2
-                    WHERE sh2.PointID = rb.PointID 
-                      AND sh2.CategoryID = rb.CategoryID
-                      AND sh2.VisitDate >= DATEADD(DAY, -30, rb.VisitDate)
-                      AND sh2.VisitDate < rb.VisitDate
-                ) > 0 THEN
-                    ISNULL((
-                        SELECT AVG(CAST(sh2.SumRoubles AS FLOAT))
-                        FROM #SalesHistory sh2
-                        WHERE sh2.PointID = rb.PointID 
-                          AND sh2.CategoryID = rb.CategoryID
-                          AND sh2.VisitDate >= DATEADD(DAY, -7, rb.VisitDate)
-                          AND sh2.VisitDate < rb.VisitDate
-                    ), 0) /
-                    (
-                        SELECT AVG(CAST(sh2.SumRoubles AS FLOAT))
-                        FROM #SalesHistory sh2
-                        WHERE sh2.PointID = rb.PointID 
-                          AND sh2.CategoryID = rb.CategoryID
-                          AND sh2.VisitDate >= DATEADD(DAY, -30, rb.VisitDate)
-                          AND sh2.VisitDate < rb.VisitDate
-                    )
-                ELSE NULL
-            END AS Momentum_Category,
-            
-            -- StdDev_Category
-            ISNULL((
-                SELECT STDEV(CAST(sh2.SumRoubles AS FLOAT))
-                FROM #SalesHistory sh2
-                WHERE sh2.PointID = rb.PointID 
-                  AND sh2.CategoryID = rb.CategoryID
-                  AND sh2.VisitDate >= DATEADD(DAY, -30, rb.VisitDate)
-                  AND sh2.VisitDate < rb.VisitDate
-            ), 0) AS StdDev_Category
-            
-        INTO #SalesFeatures
-        FROM #ResultBase rb;
-        
-        CREATE CLUSTERED INDEX IX_SF_DatePointCat ON #SalesFeatures (VisitDate, PointID, CategoryID);
-
-        -- 12. Финальный результат: объединение всех фичей (без SumRoubles - это целевая переменная!)
+        -- 11. Финальный результат: объединение всех фичей
         SELECT 
             rb.VisitDate,
             rb.PointID,
@@ -572,63 +443,38 @@ BEGIN
             rb.MicroRegionID,
             
             -- Календарные фичи
-            rb.day_of_week,
-            rb.is_weekend,
-            rb.is_monday,
-            rb.is_friday,
-            rb.is_saturday,
-            rb.is_sunday,
-            rb.is_holiday,
-            rb.is_pre_holiday,
-            rb.is_post_holiday,
-            rb.month,
-            rb.quarter,
-            rb.week_of_year,
-            rb.is_month_start,
-            rb.is_month_end,
-            rb.day_of_month,
-            rb.day_of_year,
-            rb.days_to_holiday,
-            rb.days_from_holiday,
-            -- Фичи истории заказов
-            dsc.Days_Since_Last_Order_Category,
-            dst.Days_Since_Last_Order_Total,
-            ai.Average_Interval_Category,
-            -- Новый показатель: дни до следующего планового визита (на основе атрибута 644)
-            dunv.Days_Until_Next_Visit,
-            -- Старые показатели для обратной совместимости
-            duc.Days_Until_Next_Order_Category,
-            dut.Days_Until_Next_Order_Total,
+            rb.DayOfWeek,
+            rb.IsFriday,
+            rb.IsMonday,
+            rb.DaysToNextHoliday,
+            rb.DaysSinceLastHoliday,
+            rb.IsPreHoliday,
+            rb.IsPostHoliday,
+            rb.Quarter,
+            rb.Month,
+            rb.WeekOfYear,
+            rb.DayOfMonth,
+            rb.DayOfYear,
+            rb.isEndOfMonth,
             
-            -- Фичи продаж
-            sf.Prev_Order_Amount_Category,
-            sf.SMA_3_Category,
-            sf.SMA_7_Category,
-            sf.SMA_30_Category,
-            sf.Momentum_Category,
-            sf.StdDev_Category
+            -- Фичи посещений (DaysLastVisit, DaysNextVisit)
+            ISNULL(vws.DaysLastVisit, 7) AS DaysLastVisit,
+            ISNULL(vws.DaysNextVisit, 7) AS DaysNextVisit,
+            
+            -- Фичи продаж категорий (DaysLastSalesCategory)
+            ISNULL(csw.DaysLastSalesCategory, 7) AS DaysLastSalesCategory,
+            
+            -- Фичи последней продажи категории (LastSalesCategory)
+            ISNULL(dcs.LastSalesCategory, 0) AS LastSalesCategory
             
         FROM #ResultBase rb
-        LEFT JOIN #DaysSinceCategory dsc ON rb.VisitDate = dsc.VisitDate 
-                                         AND rb.PointID = dsc.PointID 
-                                         AND rb.CategoryID = dsc.CategoryID
-        LEFT JOIN #DaysSinceTotal dst ON rb.VisitDate = dst.VisitDate 
-                                      AND rb.PointID = dst.PointID 
-                                      AND rb.CategoryID = dst.CategoryID
-        LEFT JOIN #AvgInterval ai ON rb.PointID = ai.PointID 
-                                  AND rb.CategoryID = ai.CategoryID
-        LEFT JOIN #DaysUntilNextVisit dunv ON rb.VisitDate = dunv.VisitDate 
-                                           AND rb.PointID = dunv.PointID 
-                                           AND rb.CategoryID = dunv.CategoryID
-        LEFT JOIN #DaysUntilCategory duc ON rb.VisitDate = duc.VisitDate 
-                                         AND rb.PointID = duc.PointID 
-                                         AND rb.CategoryID = duc.CategoryID
-        LEFT JOIN #DaysUntilTotal dut ON rb.VisitDate = dut.VisitDate 
-                                      AND rb.PointID = dut.PointID 
-                                      AND rb.CategoryID = dut.CategoryID
-        LEFT JOIN #SalesFeatures sf ON rb.VisitDate = sf.VisitDate 
-                                    AND rb.PointID = sf.PointID 
-                                    AND rb.CategoryID = sf.CategoryID
+        LEFT JOIN #VisitWithShifts vws ON rb.PointID = vws.PointID AND rb.VisitDate = vws.VisitDate
+        LEFT JOIN #CategorySalesWithShifts csw ON rb.PointID = csw.PointID 
+                                              AND rb.CategoryID = csw.CategoryID 
+                                              AND rb.VisitDate = csw.VisitDate
+        LEFT JOIN #DailyCategorySales dcs ON rb.PointID = dcs.PointID 
+                                          AND rb.CategoryID = dcs.CategoryID 
+                                          AND rb.VisitDate = dcs.VisitDate
         ORDER BY rb.VisitDate, rb.PointID, rb.CategoryID;
 
         -- Очистка временных таблиц
@@ -636,16 +482,12 @@ BEGIN
         DROP TABLE #PointFeatures;
         DROP TABLE #Categories;
         DROP TABLE #FullGrid;
+        DROP TABLE #VisitHistory;
         DROP TABLE #SalesHistory;
-        DROP TABLE #OrderHistory;
         DROP TABLE #ResultBase;
-        DROP TABLE #DaysSinceCategory;
-        DROP TABLE #DaysSinceTotal;
-        DROP TABLE #DaysUntilNextVisit;
-        DROP TABLE #DaysUntilCategory;
-        DROP TABLE #DaysUntilTotal;
-        DROP TABLE #AvgInterval;
-        DROP TABLE #SalesFeatures;
+        DROP TABLE #VisitWithShifts;
+        DROP TABLE #CategorySalesWithShifts;
+        DROP TABLE #DailyCategorySales;
         
     END TRY
     BEGIN CATCH
@@ -665,16 +507,12 @@ BEGIN
         IF OBJECT_ID('tempdb..#PointFeatures') IS NOT NULL DROP TABLE #PointFeatures;
         IF OBJECT_ID('tempdb..#Categories') IS NOT NULL DROP TABLE #Categories;
         IF OBJECT_ID('tempdb..#FullGrid') IS NOT NULL DROP TABLE #FullGrid;
+        IF OBJECT_ID('tempdb..#VisitHistory') IS NOT NULL DROP TABLE #VisitHistory;
         IF OBJECT_ID('tempdb..#SalesHistory') IS NOT NULL DROP TABLE #SalesHistory;
-        IF OBJECT_ID('tempdb..#OrderHistory') IS NOT NULL DROP TABLE #OrderHistory;
         IF OBJECT_ID('tempdb..#ResultBase') IS NOT NULL DROP TABLE #ResultBase;
-        IF OBJECT_ID('tempdb..#DaysSinceCategory') IS NOT NULL DROP TABLE #DaysSinceCategory;
-        IF OBJECT_ID('tempdb..#DaysSinceTotal') IS NOT NULL DROP TABLE #DaysSinceTotal;
-        IF OBJECT_ID('tempdb..#DaysUntilNextVisit') IS NOT NULL DROP TABLE #DaysUntilNextVisit;
-        IF OBJECT_ID('tempdb..#DaysUntilCategory') IS NOT NULL DROP TABLE #DaysUntilCategory;
-        IF OBJECT_ID('tempdb..#DaysUntilTotal') IS NOT NULL DROP TABLE #DaysUntilTotal;
-        IF OBJECT_ID('tempdb..#AvgInterval') IS NOT NULL DROP TABLE #AvgInterval;
-        IF OBJECT_ID('tempdb..#SalesFeatures') IS NOT NULL DROP TABLE #SalesFeatures;
+        IF OBJECT_ID('tempdb..#VisitWithShifts') IS NOT NULL DROP TABLE #VisitWithShifts;
+        IF OBJECT_ID('tempdb..#CategorySalesWithShifts') IS NOT NULL DROP TABLE #CategorySalesWithShifts;
+        IF OBJECT_ID('tempdb..#DailyCategorySales') IS NOT NULL DROP TABLE #DailyCategorySales;
         
         -- Проброс ошибки дальше
         RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
