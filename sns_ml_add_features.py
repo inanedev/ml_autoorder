@@ -281,27 +281,23 @@ def load_and_add_features(start_date: date, end_date: date) -> pd.DataFrame:
 
 # Пример использования
 if __name__ == "__main__":
-    # Для тестирования создадим пример датафрейма
-    print("Тестирование функции add_calendar_features...")
+    # Установка дат: end_date = текущая дата - 1 день, start_date = end_date - 1 год
+    today = date.today()
+    end_date = today - timedelta(days=1)
+    start_date = end_date - timedelta(days=365)
     
-    # Создаем тестовый датафрейм с датами
-    test_dates = pd.date_range(start='2024-01-01', end='2024-01-15', freq='D')
-    test_df = pd.DataFrame({
-        'VisitDate': test_dates,
-        'PointID': range(len(test_dates)),
-        'SumRoubles': np.random.randint(1000, 10000, len(test_dates))
-    })
-    
-    print("\nИсходный датафрейм:")
-    print(test_df.head())
-    
-    # Добавляем признаки
-    result = add_calendar_features(test_df)
-    
-    print("\nДатафрейм с календарными признаками:")
-    print(result[['VisitDate', 'DayOfWeek', 'IsFriday', 'IsMonday', 'DaysToNextHoliday', 
-                  'DaysSinceLastHoliday', 'IsPreHoliday', 'IsPostHoliday', 'Quarter', 
-                  'Month', 'WeekOfYear', 'DayOfMonth', 'DayOfYear']].to_string())
-    
-    print("\nИнформация о датафрейме:")
-    print(result.info())
+    try:
+        print(f"Загрузка продуктивных данных за период {start_date} - {end_date}...")
+        
+        # Загружаем продуктивные данные и добавляем признаки через load_and_add_features
+        result = load_and_add_features(start_date, end_date)
+        
+        print("\nПервые 5 строк датафрейма с календарными признаками:")
+        print(result[['VisitDate', 'DayOfWeek', 'IsFriday', 'IsMonday', 'DaysToNextHoliday', 
+                      'DaysSinceLastHoliday', 'IsPreHoliday', 'IsPostHoliday', 'Quarter', 
+                      'Month', 'WeekOfYear', 'DayOfMonth', 'DayOfYear']].head())
+        
+        print(f"\nРазмер датафрейма: {result.shape}")
+        print(f"\nТипы данных:\n{result.dtypes}")
+    except Exception as e:
+        print(f"Ошибка: {e}")
