@@ -206,7 +206,8 @@ def add_calendar_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate') -
     
     # 2.13 isEndOfMonth - бинарная фича, которая показывает, что visitdate попадает 
     # на последние 3 дня месяца или на первые 2 дня месяца, но только если до конца 
-    # недели меньше или равно 2 дня (конец недели - воскресенье, 7-й день)
+    # недели меньше или равно 2 дня (конец недели - воскресенье, 7-й день),
+    # либо является последней субботой месяца
     day_of_month = result_df['DayOfMonth']
     day_of_week = result_df['DayOfWeek']
     days_in_month = result_df[visit_date_col].dt.daysinmonth
@@ -218,7 +219,10 @@ def add_calendar_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate') -
     is_first_2_days = day_of_month <= 2
     is_end_of_week = day_of_week >= 5  # пятница(5), суббота(6), воскресенье(7)
     
-    result_df['isEndOfMonth'] = ((is_last_3_days) | (is_first_2_days & is_end_of_week)).astype(int)
+    # Последняя суббота месяца: DayOfWeek == 6 (суббота) И день + 7 > days_in_month
+    is_last_saturday = (day_of_week == 6) & (day_of_month + 7 > days_in_month)
+    
+    result_df['isEndOfMonth'] = ((is_last_3_days) | (is_first_2_days & is_end_of_week) | is_last_saturday).astype(int)
     
     # Расчет признаков, связанных с праздниками
     days_to_next_holiday = []
@@ -270,6 +274,64 @@ def add_calendar_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate') -
     
     logger.info(f"Успешно добавлено 13 календарных признаков")
     logger.info(f"Новые колонки: {['DayOfWeek', 'IsFriday', 'IsMonday', 'DaysToNextHoliday', 'DaysSinceLastHoliday', 'IsPreHoliday', 'IsPostHoliday', 'Quarter', 'Month', 'WeekOfYear', 'DayOfMonth', 'DayOfYear', 'isEndOfMonth']}")
+    
+    return result_df
+
+
+def add_visit_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate', point_id_col: str = 'PointID') -> pd.DataFrame:
+    """
+    Добавляет признаки, связанные с посещениями точек.
+    
+    Добавляемые признаки:
+    1. DaysLastVisit - количество дней с предыдущего VisitDate для PointID. 
+       Если определить не удалось (первое посещение), то = 7
+    2. DaysNextVisit - количество дней до следующего VisitDate для PointID. 
+       Если определить не удалось (последнее посещение), то = 7
+    
+    Args:
+        df: Исходный датафрейм
+        visit_date_col: Название колонки с датой посещения (по умолчанию 'VisitDate')
+        point_id_col: Название колонки с идентификатором точки (по умолчанию 'PointID')
+        
+    Returns:
+        Датафрейм с добавленными признаками
+    """
+    logger.info(f"Добавление признаков посещений на основе колонок '{visit_date_col}' и '{point_id_col}'")
+    
+    # Создаем копию датафрейма, чтобы не модифицировать исходный
+    result_df = df.copy()
+    
+    # Преобразуем колонку с датой в формат datetime, если это еще не сделано
+    if not pd.api.types.is_datetime64_any_dtype(result_df[visit_date_col]):
+        result_df[visit_date_col] = pd.to_datetime(result_df[visit_date_col])
+    
+    # Инициализируем колонки значением по умолчанию 7
+    result_df['DaysLastVisit'] = 7
+    result_df['DaysNextVisit'] = 7
+    
+    # Группируем по PointID и сортируем по VisitDate
+    for point_id, group in result_df.groupby(point_id_col):
+        # Получаем индексы строк в группе, отсортированные по дате
+        sorted_group = group.sort_values(visit_date_col)
+        indices = sorted_group.index.tolist()
+        dates = sorted_group[visit_date_col].tolist()
+        
+        # Рассчитываем DaysLastVisit и DaysNextVisit для каждой строки в группе
+        for i in range(len(indices)):
+            idx = indices[i]
+            
+            # DaysLastVisit: разница с предыдущей датой
+            if i > 0:
+                delta_last = (dates[i] - dates[i-1]).days
+                result_df.loc[idx, 'DaysLastVisit'] = delta_last
+            
+            # DaysNextVisit: разница со следующей датой
+            if i < len(indices) - 1:
+                delta_next = (dates[i+1] - dates[i]).days
+                result_df.loc[idx, 'DaysNextVisit'] = delta_next
+    
+    logger.info(f"Успешно добавлено 2 признака посещений")
+    logger.info(f"Новые колонки: ['DaysLastVisit', 'DaysNextVisit']")
     
     return result_df
 
@@ -363,14 +425,14 @@ def save_to_sql_server(df: pd.DataFrame, table_name: str = 'SNS_ML_features') ->
 
 def load_and_add_features(start_date: date, end_date: date) -> pd.DataFrame:
     """
-    Загружает сырые данные из БД с помощью fetch_raw_data и добавляет к ним календарные признаки.
+    Загружает сырые данные из БД с помощью fetch_raw_data и добавляет к ним календарные признаки и признаки посещений.
     
     Args:
         start_date: Начальная дата периода выгрузки (включительно)
         end_date: Конечная дата периода выгрузки (не включительно)
         
     Returns:
-        pd.DataFrame: Датафрейм с сырыми данными и добавленными календарными признаками
+        pd.DataFrame: Датафрейм с сырыми данными и добавленными календарными признаками и признаками посещений
         
     Raises:
         Exception: При ошибке загрузки данных или добавления признаков
@@ -384,6 +446,9 @@ def load_and_add_features(start_date: date, end_date: date) -> pd.DataFrame:
     
     # Добавляем календарные признаки
     df_with_features = add_calendar_features(df)
+    
+    # Добавляем признаки посещений
+    df_with_features = add_visit_features(df_with_features)
     
     logger.info("Данные успешно загружены и обогащены признаками")
     
