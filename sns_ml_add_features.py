@@ -349,6 +349,10 @@ def add_category_sales_features(df: pd.DataFrame, visit_date_col: str = 'VisitDa
        Рассчитывается для комбинации VisitDate - PointID - CategoryID как дней с момента 
        последней продажи этой категории в эту точку.
        Если определить не удалось (первая продажа категории в точку), то = 7
+    2. LastSalesCategory - сумма последней продажи категории в точку.
+       Рассчитывается для комбинации VisitDate - PointID - CategoryID как сумма 
+       последней продажи этой категории в эту точку.
+       Если определить не удалось (первая продажа категории в точку), то = 0
     
     Расчет ведется по уникальным датам для каждой комбинации PointID-CategoryID, чтобы 
     корректно обрабатывать случаи, когда для одной точки и категории есть несколько записей 
@@ -395,6 +399,71 @@ def add_category_sales_features(df: pd.DataFrame, visit_date_col: str = 'VisitDa
     
     logger.info(f"Успешно добавлен 1 признак продаж категорий")
     logger.info(f"Новые колонки: ['DaysLastSalesCategory']")
+    
+    return result_df
+
+
+def add_last_sales_category_feature(df: pd.DataFrame, visit_date_col: str = 'VisitDate', 
+                                     point_id_col: str = 'PointID', 
+                                     category_id_col: str = 'CategoryID',
+                                     sum_col: str = 'SumRoubles') -> pd.DataFrame:
+    """
+    Добавляет признак суммы последней продажи категории в точку.
+    
+    Добавляемые признаки:
+    1. LastSalesCategory - сумма последней продажи категории в точку.
+       Рассчитывается для комбинации VisitDate - PointID - CategoryID как сумма 
+       последней продажи этой категории в эту точку (предыдущая продажа по времени).
+       Если определить не удалось (первая продажа категории в точку), то = 0
+    
+    Расчет ведется по уникальным датам для каждой комбинации PointID-CategoryID, чтобы 
+    корректно обрабатывать случаи, когда для одной точки и категории есть несколько записей 
+    с одинаковым VisitDate. В таком случае берется максимальная сумма продажи за день.
+    
+    Args:
+        df: Исходный датафрейм
+        visit_date_col: Название колонки с датой посещения (по умолчанию 'VisitDate')
+        point_id_col: Название колонки с идентификатором точки (по умолчанию 'PointID')
+        category_id_col: Название колонки с идентификатором категории (по умолчанию 'CategoryID')
+        sum_col: Название колонки с суммой продажи (по умолчанию 'SumRoubles')
+        
+    Returns:
+        Датафрейм с добавленным признаком
+    """
+    logger.info(f"Добавление признака LastSalesCategory на основе колонок '{visit_date_col}', '{point_id_col}', '{category_id_col}' и '{sum_col}'")
+    
+    # Создаем копию датафрейма, чтобы не модифицировать исходный
+    result_df = df.copy()
+    
+    # Преобразуем колонку с датой в формат datetime, если это еще не сделано
+    if not pd.api.types.is_datetime64_any_dtype(result_df[visit_date_col]):
+        result_df[visit_date_col] = pd.to_datetime(result_df[visit_date_col])
+    
+    # Создаем датафрейм с уникальными комбинациями PointID, CategoryID, VisitDate и SumRoubles
+    # Для случаев, когда в один день было несколько продаж одной категории в одну точку,
+    # агрегируем сумму за день (суммируем)
+    daily_sales = result_df.groupby([point_id_col, category_id_col, visit_date_col])[sum_col].sum().reset_index()
+    
+    # Переименовываем агрегированную колонку, чтобы избежать конфликта имен при merge
+    daily_sales = daily_sales.rename(columns={sum_col: 'DailySum'})
+    
+    # Сортируем по PointID, CategoryID и VisitDate для корректного расчета shift
+    daily_sales = daily_sales.sort_values([point_id_col, category_id_col, visit_date_col]).reset_index(drop=True)
+    
+    # Рассчитываем сумму предыдущей продажи для каждой комбинации PointID-CategoryID с помощью groupby + shift
+    daily_sales['LastSalesCategory'] = daily_sales.groupby([point_id_col, category_id_col])['DailySum'].shift(1)
+    
+    # Заполняем NaN значениями по умолчанию (0) для первой продажи категории в точку
+    daily_sales['LastSalesCategory'] = daily_sales['LastSalesCategory'].fillna(0)
+    
+    # Удаляем вспомогательную колонку DailySum
+    daily_sales = daily_sales.drop(columns=['DailySum'])
+    
+    # Merge с исходным датафреймом для присваивания значений всем строкам
+    result_df = result_df.merge(daily_sales, on=[point_id_col, category_id_col, visit_date_col], how='left')
+    
+    logger.info(f"Успешно добавлен признак LastSalesCategory")
+    logger.info(f"Новые колонки: ['LastSalesCategory']")
     
     return result_df
 
@@ -517,6 +586,9 @@ def load_and_add_features(start_date: date, end_date: date) -> pd.DataFrame:
     
     # Добавляем признаки продаж категорий
     df_with_features = add_category_sales_features(df_with_features)
+    
+    # Добавляем признак LastSalesCategory
+    df_with_features = add_last_sales_category_feature(df_with_features)
     
     logger.info("Данные успешно загружены и обогащены признаками")
     
