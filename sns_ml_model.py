@@ -254,9 +254,7 @@ def main():
     start_date = end_date - timedelta(days=365)
     
     # Параметры из командной строки
-    # Использование: python sns_ml_model.py [start_date] [end_date] [model_path] [--predict]
-    predict_mode = '--predict' in sys.argv or '-p' in sys.argv
-    
+    # Использование: python sns_ml_model.py [start_date] [end_date] [model_path]
     if len(sys.argv) > 1 and sys.argv[1] not in ['--predict', '-p']:
         try:
             start_date = datetime.strptime(sys.argv[1], '%Y-%m-%d').date()
@@ -271,11 +269,10 @@ def main():
             logger.error(f"Неверный формат даты end_date: {sys.argv[2]}. Используйте YYYY-MM-DD")
             sys.exit(1)
     
-    model_path = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] not in ['--predict', '-p'] else 'catboost_model.cbm'
+    model_path = sys.argv[3] if len(sys.argv) > 3 else 'catboost_model.cbm'
     
     logger.info(f"Период обучения: {start_date} - {end_date}")
     logger.info(f"Путь сохранения модели: {model_path}")
-    logger.info(f"Режим прогнозирования: {predict_mode}")
     
     try:
         # Шаг 1: Загрузка данных с признаками
@@ -401,81 +398,84 @@ def main():
         logger.info("Обучение обеих моделей завершено успешно!")
         logger.info("=" * 60)
 
-        # Шаг 7: Прогнозирование на тестовых данных (если указан флаг --predict)
-        if predict_mode:
-            logger.info("\n" + "=" * 60)
-            logger.info("Шаг 7: Прогнозирование на тестовых данных обеими моделями")
-            logger.info("=" * 60)
+        # Шаг 7: Прогнозирование на тестовых данных (выполняется всегда)
+        logger.info("\n" + "=" * 60)
+        logger.info("Шаг 7: Прогнозирование на тестовых данных всеми моделями")
+        logger.info("=" * 60)
 
-            # Загружаем тестовые данные на текущую дату
-            test_date = today
-            logger.info(f"Загрузка тестовых данных на дату: {test_date}")
+        # Загружаем тестовые данные на текущую дату
+        test_date = today
+        logger.info(f"Загрузка тестовых данных на дату: {test_date}")
 
-            test_df = fetch_test_data(test_date)
-            logger.info(f"Загружено {len(test_df)} строк тестовых данных")
-            logger.info(f"Колонки тестового набора: {list(test_df.columns)}")
+        test_df = fetch_test_data(test_date)
+        logger.info(f"Загружено {len(test_df)} строк тестовых данных")
+        logger.info(f"Колонки тестового набора: {list(test_df.columns)}")
 
-            # Преобразование данных для совместимости с моделью
-            # Убеждаемся, что все необходимые признаки присутствуют
-            logger.info("Преобразование тестовых данных для прогнозирования...")
+        # Преобразование данных для совместимости с моделью
+        # Убеждаемся, что все необходимые признаки присутствуют
+        logger.info("Преобразование тестовых данных для прогнозирования...")
 
-            # Проверяем наличие всех признаков из обучения
-            missing_cols = set(feature_names) - set(test_df.columns)
-            if missing_cols:
-                logger.warning(f"Отсутствуют колонки в тестовых данных: {missing_cols}")
-                # Добавляем отсутствующие колонки со значением 0 или другим дефолтным
-                for col in missing_cols:
-                    test_df[col] = 0
+        # Проверяем наличие всех признаков из обучения
+        missing_cols = set(feature_names) - set(test_df.columns)
+        if missing_cols:
+            logger.warning(f"Отсутствуют колонки в тестовых данных: {missing_cols}")
+            # Добавляем отсутствующие колонки со значением 0 или другим дефолтным
+            for col in missing_cols:
+                test_df[col] = 0
 
-            # Отбираем только нужные колонки в правильном порядке
-            X_test = test_df[feature_names].copy()
+        # Отбираем только нужные колонки в правильном порядке
+        X_test = test_df[feature_names].copy()
 
-            # Преобразуем категориальные признаки в строковый тип (как при обучении)
-            for idx in categorical_features:
-                col_name = feature_names[idx]
-                X_test[col_name] = X_test[col_name].fillna('Unknown').astype(str)
+        # Преобразуем категориальные признаки в строковый тип (как при обучении)
+        for idx in categorical_features:
+            col_name = feature_names[idx]
+            X_test[col_name] = X_test[col_name].fillna('Unknown').astype(str)
 
-            # Прогнозирование базовой моделью
-            logger.info("Выполнение прогнозирования базовой моделью...")
-            predictions_base = model_base.predict(X_test)
+        # Словарь для хранения всех моделей и их предсказаний
+        # Формат: {model_name: (model_object, predictions_array)}
+        models_dict = {
+            'base': (model_base, model_base.predict(X_test)),
+            'new': (model_new, model_new.predict(X_test))
+        }
 
-            # Прогнозирование улучшенной моделью
-            logger.info("Выполнение прогнозирования улучшенной моделью...")
-            predictions_new = model_new.predict(X_test)
+        # Логирование предсказаний
+        for model_name, (model_obj, predictions) in models_dict.items():
+            logger.info(f"Модель '{model_name}': выполнено {len(predictions)} предсказаний")
+            logger.info(f"  Среднее: {np.mean(predictions):.4f}, Std: {np.std(predictions):.4f}")
 
-            # Расчет вероятности/уверенности прогноза для улучшенной модели
-            mean_pred_new = np.mean(predictions_new)
-            std_pred_new = np.std(predictions_new)
-            confidence_new = np.exp(-np.abs(predictions_new - mean_pred_new) / (std_pred_new + 1e-6))
+        # Расчет вероятности/уверенности прогноза (на основе улучшенной модели)
+        predictions_new = models_dict['new'][1]
+        mean_pred_new = np.mean(predictions_new)
+        std_pred_new = np.std(predictions_new)
+        confidence_new = np.exp(-np.abs(predictions_new - mean_pred_new) / (std_pred_new + 1e-6))
 
-            # Добавляем предсказания от обеих моделей в тестовый датафрейм
-            test_df['Predict_base'] = predictions_base
-            test_df['Predict_new'] = predictions_new
-            test_df['Prediction_Confidence'] = confidence_new
+        # Сохранение результатов от всех моделей в одну таблицу базы данных
+        logger.info("\n" + "=" * 60)
+        logger.info("Шаг 8: Сохранение результатов от всех моделей в SNS_ML_Predictions")
+        logger.info("=" * 60)
 
-            # Добавляем служебные поля
-            test_df['CreatedAt'] = datetime.now()
-            test_df['ModelVersion'] = 'catboost_v2_dual_model'
+        # Создаем результирующий датафрейм для сохранения
+        # Сначала копируем все фичи из тестовых данных
+        result_df = test_df.copy()
 
-            logger.info(f"Прогнозы выполнены. Статистика предсказаний:")
-            logger.info(f"  Базовая модель - Среднее: {np.mean(predictions_base):.2f}, Стандартное отклонение: {np.std(predictions_base):.2f}")
-            logger.info(f"  Улучшенная модель - Среднее: {np.mean(predictions_new):.2f}, Стандартное отклонение: {np.std(predictions_new):.2f}")
-            logger.info(f"  Средняя уверенность: {np.mean(confidence_new):.4f}")
+        # Добавляем предсказания от каждой модели в порядке добавления в словарь
+        for model_name, (model_obj, predictions) in models_dict.items():
+            col_name = f'predict_{model_name}'
+            result_df[col_name] = predictions
+            logger.info(f"Добавлены предсказания модели '{model_name}' в колонку {col_name}")
 
-            # Сохранение результатов в базу данных
-            logger.info("\n" + "=" * 60)
-            logger.info("Шаг 8: Сохранение результатов в SNS_ML_Predictions")
-            logger.info("=" * 60)
+        # Добавляем служебные колонки
+        result_df['CreatedAt'] = datetime.now()
+        
+        # Сохраняем в таблицу
+        save_predictions_to_sql(result_df, table_name='SNS_ML_Predictions')
 
-            # Выбираем все колонки для сохранения
-            columns_to_save = list(test_df.columns)
-            logger.info(f"Сохранение {len(test_df)} записей с {len(columns_to_save)} колонками")
-
-            save_predictions_to_sql(test_df, table_name='SNS_ML_Predictions')
-
-            logger.info("\n" + "=" * 60)
-            logger.info("Прогнозирование и сохранение результатов завершены успешно!")
-            logger.info("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info("Прогнозирование и сохранение результатов завершены успешно!")
+        logger.info(f"Результаты сохранены в таблицу: SNS_ML_Predictions")
+        logger.info(f"Количество колонок с предсказаниями: {len(models_dict)}")
+        logger.info(f"Имена колонок предсказаний: {[f'predict_{name}' for name in models_dict.keys()]}")
+        logger.info("=" * 60)
 
         
     except Exception as e:
