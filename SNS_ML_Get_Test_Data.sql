@@ -163,8 +163,8 @@ BEGIN
         
         CREATE CLUSTERED INDEX IX_FG_DatePointCat ON #FullGrid (VisitDate, PointID, CategoryID);
 
-        -- 5. История продаж для расчета лаговых фичей (строго до @TargetDate)
-        -- Для add_visit_features: история визитов по точкам
+        -- 5. История посещений для расчета DaysLastVisit и DaysNextVisit (аналог add_visit_features)
+        -- Берем данные за последний месяц до @TargetDate
         IF OBJECT_ID('tempdb..#VisitHistory') IS NOT NULL DROP TABLE #VisitHistory;
         SELECT 
             CAST(o.orDate AS DATE) AS VisitDate, 
@@ -172,13 +172,15 @@ BEGIN
         INTO #VisitHistory
         FROM DS_Orders o 
         WHERE o.orType = 1 
+          AND o.orDate >= DATEADD(MONTH, -1, @TargetDate)
           AND o.orDate < @TargetDate
         GROUP BY CAST(o.orDate AS DATE), o.mfID;
         
         CREATE CLUSTERED INDEX IX_VH_DatePoint ON #VisitHistory (VisitDate, PointID);
         CREATE NONCLUSTERED INDEX IX_VH_Point ON #VisitHistory (PointID, VisitDate);
 
-        -- 6. История продаж по категориям для DaysLastSalesCategory и LastSalesCategory
+        -- 6. История продаж по категориям для DaysLastSalesCategory и LastSalesCategory (аналог add_category_sales_features и add_last_sales_category_feature)
+        -- Берем данные за последний месяц до @TargetDate
         IF OBJECT_ID('tempdb..#SalesHistory') IS NOT NULL DROP TABLE #SalesHistory;
         SELECT 
             CAST(o.orDate AS DATE) AS VisitDate, 
@@ -190,6 +192,7 @@ BEGIN
         INNER JOIN DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
         INNER JOIN #ItemMap m ON CAST(oi.iID AS INT) = m.iid 
         WHERE o.orType = 1 
+          AND o.orDate >= DATEADD(MONTH, -1, @TargetDate)
           AND o.orDate < @TargetDate
         GROUP BY CAST(o.orDate AS DATE), o.mfID, m.CategoryID;
         
@@ -349,84 +352,80 @@ BEGIN
         CREATE CLUSTERED INDEX IX_RB_DatePointCat ON #ResultBase (VisitDate, PointID, CategoryID);
 
         -- 8. Расчет DaysLastVisit и DaysNextVisit (аналог add_visit_features)
-        -- Сначала создаем таблицу с уникальными визитами и рассчитываем предыдущий/следующий визит
+        -- Для каждой точки находим последний визит до @TargetDate и следующий визит после @TargetDate
+        -- в пределах данных за последний месяц
         IF OBJECT_ID('tempdb..#VisitWithShifts') IS NOT NULL DROP TABLE #VisitWithShifts;
-        WITH UniqueVisits AS (
-            SELECT DISTINCT PointID, VisitDate
-            FROM #VisitHistory
-        ),
-        VisitShifts AS (
+        WITH LastVisitBefore AS (
+            -- Последний визит до @TargetDate для каждой точки
             SELECT 
                 PointID,
-                VisitDate,
-                LAG(VisitDate) OVER (PARTITION BY PointID ORDER BY VisitDate) AS PrevVisitDate,
-                LEAD(VisitDate) OVER (PARTITION BY PointID ORDER BY VisitDate) AS NextVisitDate
-            FROM UniqueVisits
+                MAX(VisitDate) AS LastVisitDate
+            FROM #VisitHistory
+            WHERE VisitDate < @TargetDate
+            GROUP BY PointID
+        ),
+        NextVisitAfter AS (
+            -- Следующий визит после @TargetDate для каждой точки (минимальная дата > @TargetDate)
+            SELECT 
+                PointID,
+                MIN(VisitDate) AS NextVisitDate
+            FROM #VisitHistory
+            WHERE VisitDate > @TargetDate
+            GROUP BY PointID
         )
         SELECT 
-            vs.PointID,
-            vs.VisitDate,
-            ISNULL(DATEDIFF(DAY, vs.PrevVisitDate, vs.VisitDate), 7) AS DaysLastVisit,
-            ISNULL(DATEDIFF(DAY, vs.VisitDate, vs.NextVisitDate), 7) AS DaysNextVisit
+            lv.PointID,
+            @TargetDate AS VisitDate,
+            ISNULL(DATEDIFF(DAY, lv.LastVisitDate, @TargetDate), 7) AS DaysLastVisit,
+            ISNULL(DATEDIFF(DAY, @TargetDate, nv.NextVisitDate), 7) AS DaysNextVisit
         INTO #VisitWithShifts
-        FROM VisitShifts vs;
+        FROM LastVisitBefore lv
+        LEFT JOIN NextVisitAfter nv ON lv.PointID = nv.PointID;
         
         CREATE CLUSTERED INDEX IX_VWS_PointDate ON #VisitWithShifts (PointID, VisitDate);
 
         -- 9. Расчет DaysLastSalesCategory (аналог add_category_sales_features)
+        -- Для каждой комбинации PointID-CategoryID находим последнюю продажу до @TargetDate
         IF OBJECT_ID('tempdb..#CategorySalesWithShifts') IS NOT NULL DROP TABLE #CategorySalesWithShifts;
-        WITH UniqueCategorySales AS (
-            SELECT DISTINCT PointID, CategoryID, VisitDate
-            FROM #SalesHistory
-        ),
-        CategorySalesShifts AS (
+        SELECT 
+            sh.PointID,
+            sh.CategoryID,
+            @TargetDate AS VisitDate,
+            ISNULL(DATEDIFF(DAY, sh.LastSaleDate, @TargetDate), 7) AS DaysLastSalesCategory
+        INTO #CategorySalesWithShifts
+        FROM (
             SELECT 
                 PointID,
                 CategoryID,
-                VisitDate,
-                LAG(VisitDate) OVER (PARTITION BY PointID, CategoryID ORDER BY VisitDate) AS PrevSaleDate
-            FROM UniqueCategorySales
-        )
-        SELECT 
-            css.PointID,
-            css.CategoryID,
-            css.VisitDate,
-            ISNULL(DATEDIFF(DAY, css.PrevSaleDate, css.VisitDate), 7) AS DaysLastSalesCategory
-        INTO #CategorySalesWithShifts
-        FROM CategorySalesShifts css
-        WHERE css.PrevSaleDate IS NOT NULL;
+                MAX(VisitDate) AS LastSaleDate
+            FROM #SalesHistory
+            WHERE VisitDate < @TargetDate
+            GROUP BY PointID, CategoryID
+        ) sh;
         
         CREATE CLUSTERED INDEX IX_CSW_PointCatDate ON #CategorySalesWithShifts (PointID, CategoryID, VisitDate);
 
         -- 10. Расчет LastSalesCategory (аналог add_last_sales_category_feature)
-        -- Агрегируем сумму за день для каждой комбинации PointID-CategoryID-VisitDate
+        -- Для каждой комбинации PointID-CategoryID находим сумму последней продажи до @TargetDate
         IF OBJECT_ID('tempdb..#DailyCategorySales') IS NOT NULL DROP TABLE #DailyCategorySales;
-        WITH DailyAgg AS (
+        WITH LastSale AS (
             SELECT 
                 PointID,
                 CategoryID,
                 VisitDate,
-                SUM(SumRoubles) AS DailySum
+                SumRoubles,
+                ROW_NUMBER() OVER (PARTITION BY PointID, CategoryID ORDER BY VisitDate DESC) AS rn
             FROM #SalesHistory
-            GROUP BY PointID, CategoryID, VisitDate
-        ),
-        SalesWithLag AS (
-            SELECT 
-                PointID,
-                CategoryID,
-                VisitDate,
-                DailySum,
-                LAG(DailySum) OVER (PARTITION BY PointID, CategoryID ORDER BY VisitDate) AS LastSalesCategory
-            FROM DailyAgg
+            WHERE VisitDate < @TargetDate
         )
         SELECT 
             PointID,
             CategoryID,
-            VisitDate,
-            ISNULL(LastSalesCategory, 0) AS LastSalesCategory
+            @TargetDate AS VisitDate,
+            ISNULL(SumRoubles, 0) AS LastSalesCategory
         INTO #DailyCategorySales
-        FROM SalesWithLag
-        WHERE LastSalesCategory IS NOT NULL;
+        FROM LastSale
+        WHERE rn = 1;
         
         CREATE CLUSTERED INDEX IX_DCS_PointCatDate ON #DailyCategorySales (PointID, CategoryID, VisitDate);
 
