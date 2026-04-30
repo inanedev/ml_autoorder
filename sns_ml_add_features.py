@@ -146,6 +146,8 @@ def add_calendar_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate') -
     10. WeekOfYear - номер недели в году (1-53)
     11. DayOfMonth - день месяца (1-31)
     12. DayOfYear - день года (1-366)
+    13. isEndOfMonth - бинарная фича: последние 3 дня месяца или первые 2 дня месяца, 
+        если до конца недели <= 2 дней (пятница, суббота, воскресенье)
     
     Args:
         df: Исходный датафрейм
@@ -202,6 +204,22 @@ def add_calendar_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate') -
     # 2.12 День года
     result_df['DayOfYear'] = result_df[visit_date_col].dt.dayofyear
     
+    # 2.13 isEndOfMonth - бинарная фича, которая показывает, что visitdate попадает 
+    # на последние 3 дня месяца или на первые 2 дня месяца, но только если до конца 
+    # недели меньше или равно 2 дня (конец недели - воскресенье, 7-й день)
+    day_of_month = result_df['DayOfMonth']
+    day_of_week = result_df['DayOfWeek']
+    days_in_month = result_df[visit_date_col].dt.daysinmonth
+    
+    # Последние 3 дня месяца
+    is_last_3_days = day_of_month >= days_in_month - 2
+    
+    # Первые 2 дня месяца И до конца недели <= 2 дней (DayOfWeek >= 5)
+    is_first_2_days = day_of_month <= 2
+    is_end_of_week = day_of_week >= 5  # пятница(5), суббота(6), воскресенье(7)
+    
+    result_df['isEndOfMonth'] = ((is_last_3_days) | (is_first_2_days & is_end_of_week)).astype(int)
+    
     # Расчет признаков, связанных с праздниками
     days_to_next_holiday = []
     days_since_last_holiday = []
@@ -250,8 +268,8 @@ def add_calendar_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate') -
     result_df['IsPreHoliday'] = is_pre_holiday
     result_df['IsPostHoliday'] = is_post_holiday
     
-    logger.info(f"Успешно добавлено 12 календарных признаков")
-    logger.info(f"Новые колонки: {['DayOfWeek', 'IsFriday', 'IsMonday', 'DaysToNextHoliday', 'DaysSinceLastHoliday', 'IsPreHoliday', 'IsPostHoliday', 'Quarter', 'Month', 'WeekOfYear', 'DayOfMonth', 'DayOfYear']}")
+    logger.info(f"Успешно добавлено 13 календарных признаков")
+    logger.info(f"Новые колонки: {['DayOfWeek', 'IsFriday', 'IsMonday', 'DaysToNextHoliday', 'DaysSinceLastHoliday', 'IsPreHoliday', 'IsPostHoliday', 'Quarter', 'Month', 'WeekOfYear', 'DayOfMonth', 'DayOfYear', 'isEndOfMonth']}")
     
     return result_df
 
