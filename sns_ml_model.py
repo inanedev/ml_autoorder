@@ -69,7 +69,8 @@ def prepare_data_for_training(df: pd.DataFrame,
     # Типичные категориальные колонки в данных SNS
     categorical_feature_names = [
         'PointID', 'CategoryID', 'DayOfWeek', 'Quarter', 'Month', 'WeekOfYear',
-        'IsFriday', 'IsMonday', 'IsPreHoliday', 'IsPostHoliday', 'isEndOfMonth'
+        'IsFriday', 'IsMonday', 'IsPreHoliday', 'IsPostHoliday', 'isEndOfMonth',
+        'BranchID', 'PointClass', 'PointType', 'MicroRegionID'
     ]
     
     # Находим индексы категориальных признаков
@@ -82,6 +83,12 @@ def prepare_data_for_training(df: pd.DataFrame,
     # Создаем X и y
     X = df_clean[feature_cols].copy()
     y = df_clean[target_col].copy()
+    
+    # Преобразуем категориальные признаки в строковый тип для корректной обработки CatBoost
+    # Заполняем NaN значением 'Unknown' перед конвертацией в строку
+    for idx in categorical_features:
+        col_name = feature_cols[idx]
+        X[col_name] = X[col_name].fillna('Unknown').astype(str)
     
     logger.info(f"Количество признаков: {len(feature_cols)}")
     logger.info(f"Количество категориальных признаков: {len(categorical_features)}")
@@ -275,6 +282,15 @@ def main():
         
         # Исключаем служебные колонки, если они есть
         exclude_cols = ['VisitDate']  # Исключаем дату, т.к. она уже преобразована в признаки
+        
+        # Проверяем наличие категориальных колонок с NaN и заполняем их перед подготовкой
+        categorical_cols_to_check = ['PointID', 'CategoryID', 'BranchID', 'PointClass', 'PointType', 'MicroRegionID']
+        for col in categorical_cols_to_check:
+            if col in df.columns:
+                nan_count = df[col].isna().sum()
+                if nan_count > 0:
+                    logger.info(f"Заполнено {nan_count} NaN в колонке {col} значением 'Unknown'")
+                    df[col] = df[col].fillna('Unknown')
         
         X, y, categorical_features, feature_names = prepare_data_for_training(
             df, 
