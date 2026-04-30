@@ -330,7 +330,7 @@ def save_to_sql_server(df: pd.DataFrame, table_name: str = 'SNS_ML_features') ->
         insert_query = f"INSERT INTO dbo.{table_name} ({columns_str}) VALUES ({placeholders})"
         
         # Вставляем данные batches
-        batch_size = 1000
+        batch_size = 10000
         total_rows = len(df)
         
         for start_idx in range(0, total_rows, batch_size):
@@ -396,7 +396,7 @@ if __name__ == "__main__":
     
     # Установка дат: end_date = текущая дата - 1 день, start_date = end_date - 1 год
     today = date.today()
-    end_date = today - timedelta(days=1)
+    end_date = today
     start_date = end_date - timedelta(days=365)
     
     # Имя таблицы для сохранения в SQL Server (по умолчанию 'SNS_ML_features')
