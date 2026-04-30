@@ -102,6 +102,14 @@ def fetch_raw_data(start_date: date, end_date: date) -> pd.DataFrame:
         # Создание DataFrame
         sns_ml_raw_data = pd.DataFrame.from_records(rows, columns=columns)
         
+        # Выбираем только нужные колонки, исключая OrderCountDocs
+        required_columns = [
+            'VisitDate', 'PointID', 'CategoryID', 'BranchID',
+            'PointClass', 'PointType', 'Lat', 'Lon',
+            'MicroRegionID', 'SumRoubles'
+        ]
+        sns_ml_raw_data = sns_ml_raw_data[required_columns]
+        
         logger.info(f"Успешно загружено {len(sns_ml_raw_data)} записей")
         logger.info(f"Колонки датафрейма: {list(sns_ml_raw_data.columns)}")
         
