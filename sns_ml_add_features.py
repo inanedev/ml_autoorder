@@ -476,9 +476,7 @@ if __name__ == "__main__":
         result = load_and_add_features(start_date, end_date)
         
         print("\nПервые 5 строк датафрейма с календарными признаками:")
-        print(result[['VisitDate', 'DayOfWeek', 'IsFriday', 'IsMonday', 'DaysToNextHoliday', 
-                      'DaysSinceLastHoliday', 'IsPreHoliday', 'IsPostHoliday', 'Quarter', 
-                      'Month', 'WeekOfYear', 'DayOfMonth', 'DayOfYear']].head())
+        print(result.head())
         
         print(f"\nРазмер датафрейма: {result.shape}")
         print(f"\nТипы данных:\n{result.dtypes}")
