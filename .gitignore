@@ -1,1 +1,46 @@
-Nothing should be ignored based on the provided file changes. The only modified file is `sns_ml_add_features.py`, which is a source code file and should not be added to .gitignore.
+```
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.ENV
+.ENV.*
+.venv/
+venv/
+.env
+.env.*
+.env.local
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# MyPy
+.mypy_cache/
+
+# Pytest
+.pytest_cache/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+```

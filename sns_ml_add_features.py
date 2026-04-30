@@ -3,7 +3,13 @@ import numpy as np
 from datetime import datetime, date, timedelta
 from typing import List, Tuple, Optional
 import logging
-from sns_ml_fetch_data import fetch_raw_data
+from sns_ml_fetch_data import fetch_raw_data, get_connection
+import pyodbc
+import os
+from dotenv import load_dotenv
+
+# Загрузка переменных окружения из .env файла
+load_dotenv()
 
 # Настройка логгирования
 logging.basicConfig(
@@ -250,6 +256,93 @@ def add_calendar_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate') -
     return result_df
 
 
+def save_to_sql_server(df: pd.DataFrame, table_name: str = 'SNS_ML_features') -> None:
+    """
+    Сохраняет датафрейм в таблицу SQL Server 2012.
+    Каждый раз таблица пересоздаётся через DROP/CREATE.
+    
+    Args:
+        df: Датафрейм для сохранения
+        table_name: Имя таблицы в БД (по умолчанию 'SNS_ML_features')
+        
+    Raises:
+        Exception: При ошибке записи в БД
+    """
+    logger.info(f"Сохранение данных в таблицу {table_name} на SQL Server")
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # DROP существующей таблицы
+        drop_query = f"IF OBJECT_ID('dbo.{table_name}', 'U') IS NOT NULL DROP TABLE dbo.{table_name}"
+        logger.info(f"Удаление существующей таблицы: {drop_query}")
+        cursor.execute(drop_query)
+        conn.commit()
+        
+        # CREATE новой таблицы на основе типов данных DataFrame
+        # Определяем типы колонок для SQL Server
+        column_definitions = []
+        for col in df.columns:
+            dtype = df[col].dtype
+            if pd.api.types.is_integer_dtype(dtype):
+                sql_type = "BIGINT"
+            elif pd.api.types.is_float_dtype(dtype):
+                sql_type = "FLOAT"
+            elif pd.api.types.is_datetime64_any_dtype(dtype):
+                sql_type = "DATETIME"
+            else:
+                # Для строк и остальных типов используем NVARCHAR(MAX)
+                sql_type = "NVARCHAR(MAX)"
+            column_definitions.append(f"[{col}] {sql_type}")
+        
+        create_query = f"CREATE TABLE dbo.{table_name} (\n    " + ",\n    ".join(column_definitions) + "\n)"
+        logger.info(f"Создание новой таблицы: {create_query}")
+        cursor.execute(create_query)
+        conn.commit()
+        
+        # Вставка данных
+        logger.info(f"Вставка {len(df)} записей в таблицу {table_name}")
+        
+        # Формируем список колонок для вставки
+        columns = list(df.columns)
+        columns_str = ", ".join([f"[{col}]" for col in columns])
+        placeholders = ", ".join(["?" for _ in columns])
+        insert_query = f"INSERT INTO dbo.{table_name} ({columns_str}) VALUES ({placeholders})"
+        
+        # Вставляем данные batches
+        batch_size = 1000
+        total_rows = len(df)
+        
+        for start_idx in range(0, total_rows, batch_size):
+            end_idx = min(start_idx + batch_size, total_rows)
+            batch = df.iloc[start_idx:end_idx]
+            
+            # Преобразуем NaN в None для совместимости с pyodbc
+            batch_data = []
+            for _, row in batch.iterrows():
+                row_data = tuple([None if pd.isna(val) else val for val in row.values])
+                batch_data.append(row_data)
+            
+            cursor.executemany(insert_query, batch_data)
+            conn.commit()
+            logger.info(f"Вставлено записей: {end_idx}/{total_rows}")
+        
+        logger.info(f"Данные успешно сохранены в таблицу {table_name}")
+        
+    except pyodbc.Error as e:
+        logger.error(f"Ошибка базы данных: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении данных: {e}")
+        raise
+    finally:
+        if conn:
+            conn.close()
+            logger.info("Соединение с базой данных закрыто")
+
+
 def load_and_add_features(start_date: date, end_date: date) -> pd.DataFrame:
     """
     Загружает сырые данные из БД с помощью fetch_raw_data и добавляет к ним календарные признаки.
@@ -281,10 +374,15 @@ def load_and_add_features(start_date: date, end_date: date) -> pd.DataFrame:
 
 # Пример использования
 if __name__ == "__main__":
+    import sys
+    
     # Установка дат: end_date = текущая дата - 1 день, start_date = end_date - 1 год
     today = date.today()
     end_date = today - timedelta(days=1)
     start_date = end_date - timedelta(days=365)
+    
+    # Имя таблицы для сохранения в SQL Server (по умолчанию 'SNS_ML_features')
+    table_name = sys.argv[1] if len(sys.argv) > 1 else 'SNS_ML_features'
     
     try:
         print(f"Загрузка продуктивных данных за период {start_date} - {end_date}...")
@@ -299,5 +397,13 @@ if __name__ == "__main__":
         
         print(f"\nРазмер датафрейма: {result.shape}")
         print(f"\nТипы данных:\n{result.dtypes}")
+        
+        # Сохраняем полный датафрейм со всеми исходными и рассчитанными данными в SQL Server
+        print(f"\nСохранение данных в таблицу {table_name} на SQL Server...")
+        save_to_sql_server(result, table_name)
+        print(f"Данные успешно сохранены в таблицу {table_name}")
+        print(f"Всего записей: {len(result)}, всего колонок: {len(result.columns)}")
+        
     except Exception as e:
         print(f"Ошибка: {e}")
+        sys.exit(1)
