@@ -107,7 +107,9 @@ def train_catboost_model(X: pd.DataFrame,
                          iterations: int = 1000,
                          depth: int = 6,
                          learning_rate: float = 0.1,
-                         random_seed: int = 42) -> Tuple[CatBoostRegressor, dict]:
+                         random_seed: int = 42,
+                         loss_function: str = 'MAE',
+                         model_name: str = "") -> Tuple[CatBoostRegressor, dict]:
     """
     Обучает модель CatBoost с использованием кросс-валидации на временных рядах.
     
@@ -120,21 +122,26 @@ def train_catboost_model(X: pd.DataFrame,
         depth: Максимальная глубина деревьев
         learning_rate: Скорость обучения
         random_seed: Случайное зерно
+        loss_function: Функция потерь ('MAE' или 'RMSE')
+        model_name: Имя модели для логгирования
         
     Returns:
         Кортеж (model, metrics):
             - model: Обученная модель CatBoost
             - metrics: Словарь с метриками качества модели
     """
-    logger.info("Обучение модели CatBoost...")
+    if model_name:
+        logger.info(f"Обучение модели {model_name}...")
+    else:
+        logger.info("Обучение модели CatBoost...")
     
     # Параметры модели
     base_params = {
         'iterations': iterations,
         'depth': depth,
         'learning_rate': learning_rate,
-        'loss_function': 'MAE',  # MAE более устойчив к выбросам
-        'eval_metric': 'MAE',
+        'loss_function': loss_function,
+        'eval_metric': loss_function,
         'verbose': 200,
         'cat_features': categorical_features if categorical_features else None,
         'random_seed': random_seed,
@@ -304,71 +311,114 @@ def main():
             exclude_cols=exclude_cols
         )
         
-        # Шаг 3: Обучение модели
+        # Шаг 3: Обучение базовой модели (MAE)
         logger.info("\n" + "=" * 60)
-        logger.info("Шаг 3: Обучение модели CatBoost")
+        logger.info("Шаг 3: Обучение базовой модели CatBoost (MAE)")
         logger.info("=" * 60)
-        
-        model, metrics = train_catboost_model(
-            X, y, 
+
+        model_base, metrics_base = train_catboost_model(
+            X, y,
             categorical_features=categorical_features,
             n_splits=5,
             iterations=1000,
             depth=6,
             learning_rate=0.1,
-            random_seed=42
+            random_seed=42,
+            loss_function='MAE',
+            model_name="Базовая модель (MAE)"
         )
-        
-        # Шаг 4: Сохранение модели
+
+        # Шаг 4: Обучение улучшенной модели (RMSE с другими параметрами)
         logger.info("\n" + "=" * 60)
-        logger.info("Шаг 4: Сохранение модели")
+        logger.info("Шаг 4: Обучение улучшенной модели CatBoost (RMSE)")
         logger.info("=" * 60)
-        
-        save_model(model, model_path)
-        
-        # Шаг 5: Вывод итоговой информации
+
+        model_new, metrics_new = train_catboost_model(
+            X, y,
+            categorical_features=categorical_features,
+            n_splits=5,
+            iterations=1500,
+            depth=8,
+            learning_rate=0.05,
+            random_seed=42,
+            loss_function='RMSE',
+            model_name="Улучшенная модель (RMSE)"
+        )
+
+        # Шаг 5: Сохранение моделей
         logger.info("\n" + "=" * 60)
-        logger.info("Итоговые метрики модели")
+        logger.info("Шаг 5: Сохранение моделей")
         logger.info("=" * 60)
-        logger.info(f"MAE: {metrics['mae_mean']:.4f} (+/- {metrics['mae_std']:.4f})")
-        logger.info(f"RMSE: {metrics['rmse_mean']:.4f} (+/- {metrics['rmse_std']:.4f})")
-        logger.info(f"R²: {metrics['r2_mean']:.4f} (+/- {metrics['r2_std']:.4f})")
-        
-        # Важность признаков
+
+        base_model_path = 'catboost_model_base.cbm'
+        new_model_path = 'catboost_model_new.cbm'
+
+        save_model(model_base, base_model_path)
+        save_model(model_new, new_model_path)
+
+        # Шаг 6: Вывод итоговой информации по обеим моделям
         logger.info("\n" + "=" * 60)
-        logger.info("Важность признаков (топ-15)")
+        logger.info("Итоговые метрики базовой модели (MAE)")
         logger.info("=" * 60)
-        
-        feature_importance = model.get_feature_importance()
-        importance_df = pd.DataFrame({
+        logger.info(f"MAE: {metrics_base['mae_mean']:.4f} (+/- {metrics_base['mae_std']:.4f})")
+        logger.info(f"RMSE: {metrics_base['rmse_mean']:.4f} (+/- {metrics_base['rmse_std']:.4f})")
+        logger.info(f"R²: {metrics_base['r2_mean']:.4f} (+/- {metrics_base['r2_std']:.4f})")
+
+        logger.info("\n" + "=" * 60)
+        logger.info("Итоговые метрики улучшенной модели (RMSE)")
+        logger.info("=" * 60)
+        logger.info(f"MAE: {metrics_new['mae_mean']:.4f} (+/- {metrics_new['mae_std']:.4f})")
+        logger.info(f"RMSE: {metrics_new['rmse_mean']:.4f} (+/- {metrics_new['rmse_std']:.4f})")
+        logger.info(f"R²: {metrics_new['r2_mean']:.4f} (+/- {metrics_new['r2_std']:.4f})")
+
+        # Важность признаков для базовой модели
+        logger.info("\n" + "=" * 60)
+        logger.info("Важность признаков - Базовая модель (топ-15)")
+        logger.info("=" * 60)
+
+        feature_importance_base = model_base.get_feature_importance()
+        importance_df_base = pd.DataFrame({
             'Feature': feature_names,
-            'Importance': feature_importance
+            'Importance': feature_importance_base
         }).sort_values('Importance', ascending=False)
-        
-        print(importance_df.head(15).to_string(index=False))
-        
+
+        print(importance_df_base.head(15).to_string(index=False))
+
+        # Важность признаков для улучшенной модели
         logger.info("\n" + "=" * 60)
-        logger.info("Обучение модели завершено успешно!")
+        logger.info("Важность признаков - Улучшенная модель (топ-15)")
         logger.info("=" * 60)
-        
-        # Шаг 6: Прогнозирование на тестовых данных (если указан флаг --predict)
+
+        feature_importance_new = model_new.get_feature_importance()
+        importance_df_new = pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': feature_importance_new
+        }).sort_values('Importance', ascending=False)
+
+        print(importance_df_new.head(15).to_string(index=False))
+
+        logger.info("\n" + "=" * 60)
+        logger.info("Обучение обеих моделей завершено успешно!")
+        logger.info("=" * 60)
+
+        # Шаг 7: Прогнозирование на тестовых данных (если указан флаг --predict)
         if predict_mode:
             logger.info("\n" + "=" * 60)
-            logger.info("Шаг 6: Прогнозирование на тестовых данных")
+            logger.info("Шаг 7: Прогнозирование на тестовых данных обеими моделями")
             logger.info("=" * 60)
-            
+
             # Загружаем тестовые данные на текущую дату
             test_date = today
             logger.info(f"Загрузка тестовых данных на дату: {test_date}")
-            
+
             test_df = fetch_test_data(test_date)
             logger.info(f"Загружено {len(test_df)} строк тестовых данных")
             logger.info(f"Колонки тестового набора: {list(test_df.columns)}")
-            
+
             # Преобразование данных для совместимости с моделью
             # Убеждаемся, что все необходимые признаки присутствуют
             logger.info("Преобразование тестовых данных для прогнозирования...")
-            
+
             # Проверяем наличие всех признаков из обучения
             missing_cols = set(feature_names) - set(test_df.columns)
             if missing_cols:
@@ -376,58 +426,57 @@ def main():
                 # Добавляем отсутствующие колонки со значением 0 или другим дефолтным
                 for col in missing_cols:
                     test_df[col] = 0
-            
+
             # Отбираем только нужные колонки в правильном порядке
             X_test = test_df[feature_names].copy()
-            
+
             # Преобразуем категориальные признаки в строковый тип (как при обучении)
             for idx in categorical_features:
                 col_name = feature_names[idx]
                 X_test[col_name] = X_test[col_name].fillna('Unknown').astype(str)
-            
-            # Прогнозирование
-            logger.info("Выполнение прогнозирования...")
-            predictions = model.predict(X_test)
-            
-            # Расчет вероятности/уверенности прогноза
-            # Для регрессии используем отклонение от среднего как меру уверенности
-            # Чем ближе предсказание к среднему, тем выше уверенность
-            mean_pred = np.mean(predictions)
-            std_pred = np.std(predictions)
-            
-            # Нормализованная уверенность (чем меньше отклонение, тем выше уверенность)
-            # Используем экспоненциальное затухание для конвертации отклонения в уверенность
-            confidence = np.exp(-np.abs(predictions - mean_pred) / (std_pred + 1e-6))
-            
-            # Добавляем предсказания и уверенность в тестовый датафрейм
-            test_df['Predicted_Category_Sum'] = predictions
-            test_df['Prediction_Confidence'] = confidence
-            
+
+            # Прогнозирование базовой моделью
+            logger.info("Выполнение прогнозирования базовой моделью...")
+            predictions_base = model_base.predict(X_test)
+
+            # Прогнозирование улучшенной моделью
+            logger.info("Выполнение прогнозирования улучшенной моделью...")
+            predictions_new = model_new.predict(X_test)
+
+            # Расчет вероятности/уверенности прогноза для улучшенной модели
+            mean_pred_new = np.mean(predictions_new)
+            std_pred_new = np.std(predictions_new)
+            confidence_new = np.exp(-np.abs(predictions_new - mean_pred_new) / (std_pred_new + 1e-6))
+
+            # Добавляем предсказания от обеих моделей в тестовый датафрейм
+            test_df['Predict_base'] = predictions_base
+            test_df['Predict_new'] = predictions_new
+            test_df['Prediction_Confidence'] = confidence_new
+
             # Добавляем служебные поля
             test_df['CreatedAt'] = datetime.now()
-            test_df['ModelVersion'] = 'catboost_v1'
-            
+            test_df['ModelVersion'] = 'catboost_v2_dual_model'
+
             logger.info(f"Прогнозы выполнены. Статистика предсказаний:")
-            logger.info(f"  Среднее: {np.mean(predictions):.2f}")
-            logger.info(f"  Стандартное отклонение: {np.std(predictions):.2f}")
-            logger.info(f"  Минимум: {np.min(predictions):.2f}")
-            logger.info(f"  Максимум: {np.max(predictions):.2f}")
-            logger.info(f"  Средняя уверенность: {np.mean(confidence):.4f}")
-            
+            logger.info(f"  Базовая модель - Среднее: {np.mean(predictions_base):.2f}, Стандартное отклонение: {np.std(predictions_base):.2f}")
+            logger.info(f"  Улучшенная модель - Среднее: {np.mean(predictions_new):.2f}, Стандартное отклонение: {np.std(predictions_new):.2f}")
+            logger.info(f"  Средняя уверенность: {np.mean(confidence_new):.4f}")
+
             # Сохранение результатов в базу данных
             logger.info("\n" + "=" * 60)
-            logger.info("Шаг 7: Сохранение результатов в SNS_ML_Predictions")
+            logger.info("Шаг 8: Сохранение результатов в SNS_ML_Predictions")
             logger.info("=" * 60)
-            
+
             # Выбираем все колонки для сохранения
             columns_to_save = list(test_df.columns)
             logger.info(f"Сохранение {len(test_df)} записей с {len(columns_to_save)} колонками")
-            
+
             save_predictions_to_sql(test_df, table_name='SNS_ML_Predictions')
-            
+
             logger.info("\n" + "=" * 60)
             logger.info("Прогнозирование и сохранение результатов завершены успешно!")
             logger.info("=" * 60)
+
         
     except Exception as e:
         logger.error(f"Ошибка при обучении модели: {e}", exc_info=True)
