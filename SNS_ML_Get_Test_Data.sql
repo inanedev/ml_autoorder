@@ -43,7 +43,9 @@ GO
  *   
  *   === Фичи посещений (из add_visit_features) ===
  *   DaysLastVisit                 - Количество дней с предыдущего VisitDate для PointID (если первое посещение = 7)
- *   DaysNextVisit                 - Количество дней до следующего VisitDate для PointID (если последнее посещение = 7)
+ *   DaysNextVisit                 - Количество дней до следующего VisitDate для PointID. Если следующего визита нет в истории,
+ *                                   рассчитывается по атрибуту 644 (дни недели посещений: 1-пн, 2-вт, ..., 7-вс). 
+ *                                   Находит ближайший день недели вперед от текущего. Если дней нет = 7.
  *   
  *   === Фичи продаж категорий (из add_category_sales_features) ===
  *   DaysLastSalesCategory         - Количество дней с момента последней продажи категории в точку (если первая продажа = 7)
@@ -68,6 +70,8 @@ GO
  *   - Категории ограничены теми, которые продавались за последний месяц (до @TargetDate)
  *   - Координаты преобразуются из строкового формата с заменой запятой на точку
  *   - Все лаговые фичи считаются строго по данным до @TargetDate (не включая саму дату)
+ *   - DaysNextVisit рассчитывается по истории визитов; если следующего визита нет, используется атрибут 644
+ *     (дни недели посещений в формате '1,3,5' где 1=понедельник, ..., 7=воскресенье)
  */
 CREATE PROCEDURE [dbo].[SNS_ML_Get_Test_Data]
     @TargetDate DATE
@@ -114,6 +118,7 @@ BEGIN
             -- Атрибуты
             ISNULL(MAX(CASE WHEN fa.attrid = 602 THEN fa.attrtext END), 'Unknown') AS PointClass,
             ISNULL(MAX(CASE WHEN fa.attrid = 555 THEN fa.attrtext END), 'Unknown') AS PointType,
+            ISNULL(MAX(CASE WHEN fa.attrid = 644 THEN fa.attrtext END), '') AS VisitDays,
             
             -- Расчет MicroRegionID (Сетка 3x3 км)
             CAST(
@@ -156,7 +161,8 @@ BEGIN
             pf.PointType,
             pf.Lat,
             pf.Lon,
-            pf.MicroRegionID
+            pf.MicroRegionID,
+            pf.VisitDays
         INTO #FullGrid
         FROM #PointFeatures pf
         CROSS JOIN #Categories c;
@@ -354,6 +360,7 @@ BEGIN
         -- 8. Расчет DaysLastVisit и DaysNextVisit (аналог add_visit_features)
         -- Для каждой точки находим последний визит до @TargetDate и следующий визит после @TargetDate
         -- в пределах данных за последний месяц
+        -- Если следующего визита нет, используем атрибут 644 (дни недели посещений) для расчета DaysNextVisit
         IF OBJECT_ID('tempdb..#VisitWithShifts') IS NOT NULL DROP TABLE #VisitWithShifts;
         WITH LastVisitBefore AS (
             -- Последний визит до @TargetDate для каждой точки
@@ -372,15 +379,53 @@ BEGIN
             FROM #VisitHistory
             WHERE VisitDate > @TargetDate
             GROUP BY PointID
+        ),
+        -- Расчет DaysNextVisit на основе атрибута 644 (дни недели посещений: 1-пн, 2-вт, ..., 7-вс)
+        -- Находим ближайший день недели вперед от текущего дня недели
+        VisitDaysCalc AS (
+            SELECT 
+                pf.PointID,
+                pf.VisitDays,
+                DATEPART(WEEKDAY, @TargetDate) AS CurrentDayOfWeek,
+                -- Разбиваем строку дней (например '1,3,5') на отдельные дни недели
+                -- И находим минимальный день недели, который больше текущего
+                (
+                    SELECT MIN(CAST(value AS INT))
+                    FROM STRING_SPLIT(pf.VisitDays, ',')
+                    WHERE TRY_CAST(value AS INT) IS NOT NULL
+                      AND CAST(value AS INT) > DATEPART(WEEKDAY, @TargetDate)
+                ) AS NextVisitDayInWeek,
+                -- Если нет дня в текущей неделе, ищем в следующей (минимальный день из списка)
+                (
+                    SELECT MIN(CAST(value AS INT))
+                    FROM STRING_SPLIT(pf.VisitDays, ',')
+                    WHERE TRY_CAST(value AS INT) IS NOT NULL
+                ) AS MinVisitDayInWeek
+            FROM #PointFeatures pf
         )
         SELECT 
             lv.PointID,
             @TargetDate AS VisitDate,
             ISNULL(DATEDIFF(DAY, lv.LastVisitDate, @TargetDate), 7) AS DaysLastVisit,
-            ISNULL(DATEDIFF(DAY, @TargetDate, nv.NextVisitDate), 7) AS DaysNextVisit
+            CASE 
+                -- Если есть следующий визит в истории, используем его
+                WHEN nv.NextVisitDate IS NOT NULL THEN DATEDIFF(DAY, @TargetDate, nv.NextVisitDate)
+                -- Если визита нет, но есть атрибут 644, рассчитываем по дням недели
+                WHEN vdc.VisitDays IS NOT NULL AND vdc.VisitDays <> '' THEN
+                    CASE 
+                        -- Если есть день недели в текущей неделе после текущего дня
+                        WHEN vdc.NextVisitDayInWeek IS NOT NULL 
+                            THEN vdc.NextVisitDayInWeek - vdc.CurrentDayOfWeek
+                        -- Иначе берем первый день из следующей недели
+                        ELSE (7 - vdc.CurrentDayOfWeek) + vdc.MinVisitDayInWeek
+                    END
+                -- По умолчанию 7
+                ELSE 7
+            END AS DaysNextVisit
         INTO #VisitWithShifts
         FROM LastVisitBefore lv
-        LEFT JOIN NextVisitAfter nv ON lv.PointID = nv.PointID;
+        LEFT JOIN NextVisitAfter nv ON lv.PointID = nv.PointID
+        LEFT JOIN VisitDaysCalc vdc ON lv.PointID = vdc.PointID;
         
         CREATE CLUSTERED INDEX IX_VWS_PointDate ON #VisitWithShifts (PointID, VisitDate);
 
