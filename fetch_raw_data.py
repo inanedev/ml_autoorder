@@ -618,6 +618,135 @@ def fetch_raw_data(start_date: Union[str, datetime], end_date: Union[str, dateti
             logger.debug("Соединение с базой данных закрыто")
 
 
+def export_features_to_sql(df: pd.DataFrame, table_name: str = "SNS_ML_Features_Raw", drop_existing: bool = False):
+    """
+    Выгружает DataFrame со всеми фичами в таблицу MSSQL 2012.
+    
+    Аргументы:
+        df: DataFrame с данными и всеми созданными фичами
+        table_name: Имя таблицы для выгрузки (по умолчанию: SNS_ML_Features_Raw)
+        drop_existing: Если True, удаляет существующую таблицу перед созданием
+    
+    Примечание:
+        Использует строку подключения из .env файла.
+        Создает таблицу с типами данных, совместимыми с MSSQL 2012.
+    """
+    if df is None or df.empty:
+        logger.error("Пустой DataFrame, выгрузка невозможна")
+        return False
+    
+    try:
+        # Настройка подключения через SQLAlchemy для MSSQL
+        from sqlalchemy import create_engine, text
+        import urllib.parse
+        
+        # Формирование строки подключения для SQLAlchemy
+        params = urllib.parse.quote_plus(
+            f"DRIVER={{{SQL_CONFIG['driver']}}}; "
+            f"SERVER={SQL_CONFIG['server']}; "
+            f"DATABASE={SQL_CONFIG['database']}; "
+            f"UID={SQL_CONFIG['user']}; "
+            f"PWD={SQL_CONFIG['password']}"
+        )
+        
+        connection_string = f"mssql+pyodbc:///?odbc_connect={params}"
+        engine = create_engine(connection_string, fast_executemany=True)
+        
+        logger.info(f"Подключение к базе данных для выгрузки в таблицу {table_name}...")
+        
+        # Определение типов данных для колонок на основе pandas dtypes
+        def map_dtype_to_mssql(dtype):
+            """Преобразует pandas dtype в тип данных MSSQL 2012"""
+            if pd.api.types.is_integer_dtype(dtype):
+                return "BIGINT"
+            elif pd.api.types.is_float_dtype(dtype):
+                return "FLOAT"
+            elif pd.api.types.is_datetime64_any_dtype(dtype):
+                return "DATETIME2"
+            elif pd.api.types.is_bool_dtype(dtype):
+                return "BIT"
+            else:
+                return "NVARCHAR(MAX)"
+        
+        # Генерация CREATE TABLE запроса
+        columns_def = []
+        for col in df.columns:
+            mssql_type = map_dtype_to_mssql(df[col].dtype)
+            columns_def.append(f"[{col}] {mssql_type}")
+        
+        # Добавление служебных колонок
+        columns_def.append("[ExportedAt] DATETIME2 DEFAULT GETDATE()")
+        
+        create_table_sql = f"""
+        IF OBJECT_ID('dbo.{table_name}', 'U') IS {'NOT' if drop_existing else ''} NULL
+            DROP TABLE dbo.{table_name};
+        
+        CREATE TABLE dbo.{table_name} (
+            [ID] INT IDENTITY(1,1) PRIMARY KEY,
+            {', '.join(columns_def)}
+        );
+        """
+        
+        if not drop_existing:
+            # Если не удаляем, то используем альтернативный подход
+            create_table_sql = f"""
+            IF OBJECT_ID('dbo.{table_name}', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.{table_name} (
+                    [ID] INT IDENTITY(1,1) PRIMARY KEY,
+                    {', '.join(columns_def)}
+                );
+            END
+            """
+        
+        logger.info(f"Создание таблицы {table_name}...")
+        with engine.connect() as conn:
+            conn.execute(text(create_table_sql))
+            conn.commit()
+        
+        logger.info(f"Таблица {table_name} создана успешно")
+        
+        # Подготовка данных для вставки
+        df_to_insert = df.copy()
+        df_to_insert['ExportedAt'] = datetime.now()
+        
+        # Преобразование типов данных для совместимости с MSSQL
+        for col in df_to_insert.columns:
+            if pd.api.types.is_datetime64_any_dtype(df_to_insert[col]):
+                # Замена NaT на None для корректной вставки
+                df_to_insert[col] = df_to_insert[col].apply(lambda x: x if pd.notna(x) else None)
+            elif pd.api.types.is_float_dtype(df_to_insert[col]):
+                # Замена inf и -inf на None
+                df_to_insert[col] = df_to_insert[col].replace([np.inf, -np.inf], None)
+        
+        # Выгрузка данных в таблицу
+        logger.info(f"Выгрузка {len(df_to_insert)} записей в таблицу {table_name}...")
+        
+        df_to_insert.to_sql(
+            name=table_name,
+            con=engine,
+            if_exists='append',
+            index=False,
+            chunksize=1000,
+            method='multi',
+            dtype=None  # Используем автоматическое определение типов
+        )
+        
+        logger.info(f"Успешно выгружено {len(df_to_insert)} записей в таблицу {table_name}")
+        
+        # Проверка количества записей в таблице
+        with engine.connect() as conn:
+            result = conn.execute(text(f"SELECT COUNT(*) FROM dbo.{table_name}"))
+            count = result.scalar()
+            logger.info(f"Всего записей в таблице {table_name}: {count}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Ошибка при выгрузке данных в SQL: {e}")
+        raise
+
+
 def main():
     """
     Основная функция для демонстрации использования модуля.
@@ -703,6 +832,15 @@ def main():
             return None
         
         logger.info(f"Загружено {len(df_train)} записей для обучения")
+        
+        # Выгрузка обучающих данных со всеми фичами в SQL таблицу
+        logger.info("Выгрузка обучающих данных со всеми фичами в таблицу SNS_ML_Features_Raw...")
+        try:
+            export_features_to_sql(df_train, table_name="SNS_ML_Features_Raw", drop_existing=False)
+            logger.info("Данные успешно выгружены в таблицу SNS_ML_Features_Raw")
+        except Exception as export_error:
+            logger.warning(f"Не удалось выгрузить данные в SQL: {export_error}")
+            logger.info("Продолжение работы без выгрузки в SQL...")
         
         # Шаг 2: Подготовка данных для обучения CatBoost
         # Определение целевой переменной и признаков
