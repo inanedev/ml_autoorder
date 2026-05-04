@@ -82,7 +82,7 @@ def prepare_data_for_training(df: pd.DataFrame,
     categorical_feature_names = [
         'PointID', 'CategoryID', 'DayOfWeek', 'Quarter', 'Month', 'WeekOfYear',
         'IsFriday', 'IsMonday', 'IsPreHoliday', 'IsPostHoliday', 'isEndOfMonth',
-        'BranchID', 'PointClass', 'PointType', 'MicroRegionID'
+        'BranchID', 'PointClass', 'PointType', 'MicroRegionID', 'LastSalesCategory'
     ]
     
     # Находим индексы категориальных признаков
@@ -256,6 +256,21 @@ def train_stacking_ensemble(X: pd.DataFrame,
         logger.error("XGBoost или LightGBM не установлены. Обучение ансамбля невозможно.")
         raise ImportError("XGBoost или LightGBM не установлены")
     
+    # Создаем копию данных с кодированными категориальными признаками для XGBoost/LightGBM
+    # CatBoost работает со строковыми категориальными признаками, а XGBoost/LightGBM требуют числовые
+    X_encoded = X.copy()
+    from sklearn.preprocessing import LabelEncoder
+    label_encoders = {}
+    
+    for idx in categorical_features:
+        col_name = X.columns[idx]
+        le = LabelEncoder()
+        # Заполняем пропуски перед кодированием
+        X_encoded[col_name] = X_encoded[col_name].fillna('Unknown').astype(str)
+        X_encoded[col_name] = le.fit_transform(X_encoded[col_name])
+        label_encoders[col_name] = le
+        logger.debug(f"Кодирован признак {col_name}: {len(le.classes_)} уникальных значений")
+    
     tscv = TimeSeriesSplit(n_splits=n_splits)
     
     # Параметры базовых моделей
@@ -316,24 +331,26 @@ def train_stacking_ensemble(X: pd.DataFrame,
     for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(X)):
         X_fold_train = X.iloc[train_idx]
         X_fold_val = X.iloc[val_idx]
+        X_fold_train_encoded = X_encoded.iloc[train_idx]
+        X_fold_val_encoded = X_encoded.iloc[val_idx]
         y_fold_train = y.iloc[train_idx]
         y_fold_val = y.iloc[val_idx]
         
         logger.info(f"\nFold {fold_idx+1}:")
         
-        # CatBoost
+        # CatBoost (работает с оригинальными строковыми данными и cat_features)
         train_pool_cb = Pool(X_fold_train, y_fold_train, cat_features=categorical_features if categorical_features else None)
         val_pool_cb = Pool(X_fold_val, y_fold_val, cat_features=categorical_features if categorical_features else None)
         catboost_model.fit(train_pool_cb, eval_set=val_pool_cb, verbose=False)
         oof_predictions['catboost'][val_idx] = catboost_model.predict(val_pool_cb)
         
-        # XGBoost
-        xgboost_model.fit(X_fold_train, y_fold_train, eval_set=[(X_fold_val, y_fold_val)], verbose=False)
-        oof_predictions['xgboost'][val_idx] = xgboost_model.predict(X_fold_val)
+        # XGBoost (работает с кодированными числовыми данными)
+        xgboost_model.fit(X_fold_train_encoded, y_fold_train, eval_set=[(X_fold_val_encoded, y_fold_val)], verbose=False)
+        oof_predictions['xgboost'][val_idx] = xgboost_model.predict(X_fold_val_encoded)
         
-        # LightGBM
-        lightgbm_model.fit(X_fold_train, y_fold_train, eval_set=[(X_fold_val, y_fold_val)], verbose=False)
-        oof_predictions['lightgbm'][val_idx] = lightgbm_model.predict(X_fold_val)
+        # LightGBM (работает с кодированными числовыми данными)
+        lightgbm_model.fit(X_fold_train_encoded, y_fold_train, eval_set=[(X_fold_val_encoded, y_fold_val)], verbose=False)
+        oof_predictions['lightgbm'][val_idx] = lightgbm_model.predict(X_fold_val_encoded)
         
         # Метрики для каждого fold
         for name, preds in oof_predictions.items():
@@ -355,19 +372,19 @@ def train_stacking_ensemble(X: pd.DataFrame,
     
     train_pool_full = Pool(X, y, cat_features=categorical_features if categorical_features else None)
     
-    # CatBoost на полных данных
+    # CatBoost на полных данных (работает с оригинальными строковыми данными)
     catboost_final = CatBoostRegressor(**catboost_params)
     catboost_final.fit(train_pool_full, verbose=200)
     base_models['catboost'] = catboost_final
     
-    # XGBoost на полных данных
+    # XGBoost на полных данных (работает с кодированными числовыми данными)
     xgboost_final = XGBRegressor(**xgboost_params)
-    xgboost_final.fit(X, y, verbose=False)
+    xgboost_final.fit(X_encoded, y, verbose=False)
     base_models['xgboost'] = xgboost_final
     
-    # LightGBM на полных данных
+    # LightGBM на полных данных (работает с кодированными числовыми данными)
     lightgbm_final = LGBMRegressor(**lightgbm_params)
-    lightgbm_final.fit(X, y, verbose=False)
+    lightgbm_final.fit(X_encoded, y, verbose=False)
     base_models['lightgbm'] = lightgbm_final
     
     # Мета-модель (CatBoost) обучается на предсказаниях базовых моделей
@@ -650,10 +667,28 @@ def main():
         if STACKING_AVAILABLE and base_models is not None and meta_model is not None:
             logger.info("\nГенерация предсказаний модели Advanced...")
             
-            # Получаем предсказания от базовых моделей
+            # Для CatBoost используем оригинальные строковые данные
             pred_catboost = base_models['catboost'].predict(X_test)
-            pred_xgboost = base_models['xgboost'].predict(X_test)
-            pred_lightgbm = base_models['lightgbm'].predict(X_test)
+            
+            # Для XGBoost и LightGBM нужно закодировать категориальные признаки
+            X_test_encoded = X_test.copy()
+            for idx in categorical_features:
+                col_name = feature_names[idx]
+                # Используем тот же LabelEncoder, что и при обучении
+                # Если категория не была в обучении, используем 0 (или можно использовать 'Unknown')
+                try:
+                    le = label_encoders.get(col_name)
+                    if le:
+                        # Преобразуем значения, которые были в обучении
+                        X_test_encoded[col_name] = X_test_encoded[col_name].astype(str).apply(
+                            lambda x: le.transform([x])[0] if x in le.classes_ else 0
+                        )
+                except Exception as e:
+                    logger.warning(f"Ошибка кодирования признака {col_name}: {e}")
+                    X_test_encoded[col_name] = 0
+            
+            pred_xgboost = base_models['xgboost'].predict(X_test_encoded)
+            pred_lightgbm = base_models['lightgbm'].predict(X_test_encoded)
             
             # Создаем DataFrame для мета-модели
             meta_test_df = pd.DataFrame({
