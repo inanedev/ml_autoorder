@@ -1,11 +1,12 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime, date, timedelta
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 import logging
 import sys
 import os
 from dotenv import load_dotenv
+import json
 
 # Импорт функций из sns_ml_add_features
 from sns_ml_add_features import load_and_add_features
@@ -19,7 +20,6 @@ from sklearn.model_selection import TimeSeriesSplit, KFold
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 
-
 # Загрузка переменных окружения из .env файла
 load_dotenv()
 
@@ -29,6 +29,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Глобальный словарь для хранения лучших гиперпараметров по категориям
+CATEGORY_BEST_PARAMS = {}
 
 def prepare_data_for_training(df: pd.DataFrame, 
                                target_col: str = 'SumRoubles',
@@ -231,6 +234,190 @@ def train_catboost_model(X: pd.DataFrame,
     return final_model, metrics
 
 
+def train_catboost_per_category(df: pd.DataFrame,
+                                 target_col: str = 'SumRoubles',
+                                 category_col: str = 'CategoryID',
+                                 exclude_cols: Optional[List[str]] = None,
+                                 param_grid: Optional[Dict] = None) -> Tuple[Dict[int, CatBoostRegressor], Dict[int, dict], pd.DataFrame]:
+    """
+    Обучает отдельные модели CatBoost для каждой категории с подбором гиперпараметров.
+    
+    Args:
+        df: Исходный датафрейм с признаками и целевой переменной
+        target_col: Название целевой колонки (по умолчанию 'SumRoubles')
+        category_col: Название колонки категории (по умолчанию 'CategoryID')
+        exclude_cols: Список колонок для исключения из признаков
+        param_grid: Сетка гиперпараметров для подбора
+        
+    Returns:
+        Кортеж (models_dict, metrics_dict, results_df):
+            - models_dict: Словарь {category_id: model}
+            - metrics_dict: Словарь {category_id: {'mae': ..., 'rmse': ..., 'r2': ..., 'best_params': ...}}
+            - results_df: Датафрейм с лучшими гиперпараметрами по категориям
+    """
+    logger.info("=" * 60)
+    logger.info("Подбор гиперпараметров для каждой категории")
+    logger.info("=" * 60)
+    
+    # Параметры по умолчанию для подбора
+    if param_grid is None:
+        param_grid = {
+            'iterations': [500, 1000, 1500],
+            'depth': [6, 8, 10],
+            'learning_rate': [0.03, 0.05, 0.1],
+            'loss_function': ['Huber:delta=1.345', 'RMSE', 'MAE']
+        }
+    
+    # Получаем уникальные категории
+    categories = df[category_col].unique()
+    logger.info(f"Найдено {len(categories)} уникальных категорий: {sorted(categories)}")
+    
+    models_dict = {}
+    metrics_dict = {}
+    results_list = []
+    
+    for cat_id in categories:
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Обработка категории {cat_id}")
+        logger.info(f"{'='*60}")
+        
+        # Фильтруем данные по категории
+        cat_df = df[df[category_col] == cat_id].copy()
+        logger.info(f"Количество записей для категории {cat_id}: {len(cat_df)}")
+        
+        if len(cat_df) < 100:
+            logger.warning(f"Категория {cat_id} имеет слишком мало данных ({len(cat_df)}). Пропускаем.")
+            continue
+        
+        # Подготавливаем данные для обучения
+        X_cat, y_cat, cat_features_idx, feature_names = prepare_data_for_training(
+            cat_df, 
+            target_col=target_col,
+            exclude_cols=exclude_cols or ['VisitDate']
+        )
+        
+        if len(X_cat) < 100:
+            logger.warning(f"Категория {cat_id} имеет слишком мало данных после подготовки ({len(X_cat)}). Пропускаем.")
+            continue
+        
+        # Подбор гиперпараметров
+        best_score = float('inf')
+        best_params = None
+        best_model = None
+        best_metrics = None
+        
+        # Перебираем комбинации гиперпараметров
+        from itertools import product
+        param_combinations = list(product(
+            param_grid['iterations'],
+            param_grid['depth'],
+            param_grid['learning_rate'],
+            param_grid['loss_function']
+        ))
+        
+        logger.info(f"Всего комбинаций гиперпараметров: {len(param_combinations)}")
+        
+        for iterations, depth, learning_rate, loss_function in param_combinations:
+            # Упрощенная кросс-валидация (3 фолда для скорости)
+            tscv = TimeSeriesSplit(n_splits=3)
+            cv_scores = []
+            
+            for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(X_cat)):
+                X_fold_train = X_cat.iloc[train_idx]
+                X_fold_val = X_cat.iloc[val_idx]
+                y_fold_train = y_cat.iloc[train_idx]
+                y_fold_val = y_cat.iloc[val_idx]
+                
+                train_pool = Pool(X_fold_train, y_fold_train, cat_features=cat_features_idx if cat_features_idx else None)
+                val_pool = Pool(X_fold_val, y_fold_val, cat_features=cat_features_idx if cat_features_idx else None)
+                
+                params = {
+                    'iterations': iterations,
+                    'depth': depth,
+                    'learning_rate': learning_rate,
+                    'loss_function': loss_function,
+                    'eval_metric': 'MAE',
+                    'verbose': False,
+                    'cat_features': cat_features_idx if cat_features_idx else None,
+                    'random_seed': 42,
+                    'early_stopping_rounds': 30
+                }
+                
+                model_cv = CatBoostRegressor(**params)
+                model_cv.fit(train_pool, eval_set=val_pool, verbose=False)
+                
+                y_pred_fold = model_cv.predict(val_pool)
+                mae_fold = mean_absolute_error(y_fold_val, y_pred_fold)
+                cv_scores.append(mae_fold)
+            
+            avg_score = np.mean(cv_scores)
+            
+            if avg_score < best_score:
+                best_score = avg_score
+                best_params = {
+                    'iterations': iterations,
+                    'depth': depth,
+                    'learning_rate': learning_rate,
+                    'loss_function': loss_function
+                }
+        
+        logger.info(f"Лучшие гиперпараметры для категории {cat_id}: {best_params}")
+        logger.info(f"Лучший MAE: {best_score:.4f}")
+        
+        # Финальное обучение на всей выборке с лучшими параметрами
+        train_pool = Pool(X_cat, y_cat, cat_features=cat_features_idx if cat_features_idx else None)
+        final_model = CatBoostRegressor(
+            **best_params,
+            verbose=200,
+            random_seed=42,
+            early_stopping_rounds=50
+        )
+        final_model.fit(train_pool)
+        
+        # Расчет метрик на обучающей выборке
+        y_pred_train = final_model.predict(train_pool)
+        mae_train = mean_absolute_error(y_cat, y_pred_train)
+        rmse_train = np.sqrt(mean_squared_error(y_cat, y_pred_train))
+        r2_train = r2_score(y_cat, y_pred_train)
+        
+        logger.info(f"Метрики на обучающей выборке: MAE={mae_train:.4f}, RMSE={rmse_train:.4f}, R²={r2_train:.4f}")
+        
+        # Сохраняем модель и метрики
+        models_dict[cat_id] = final_model
+        metrics_dict[cat_id] = {
+            'mae': mae_train,
+            'rmse': rmse_train,
+            'r2': r2_train,
+            'best_params': best_params
+        }
+        
+        # Добавляем в результаты
+        results_list.append({
+            'CategoryID': cat_id,
+            'Iterations': best_params['iterations'],
+            'Depth': best_params['depth'],
+            'LearningRate': best_params['learning_rate'],
+            'LossFunction': best_params['loss_function'],
+            'MAE': mae_train,
+            'RMSE': rmse_train,
+            'R2': r2_train,
+            'NumSamples': len(X_cat)
+        })
+        
+        # Сохраняем лучшие параметры в глобальный словарь
+        CATEGORY_BEST_PARAMS[cat_id] = best_params
+    
+    # Создаем датафрейм с результатами
+    results_df = pd.DataFrame(results_list)
+    
+    logger.info("\n" + "=" * 60)
+    logger.info("Подбор гиперпараметров завершен")
+    logger.info(f"Обучено моделей: {len(models_dict)}")
+    logger.info("=" * 60)
+    
+    return models_dict, metrics_dict, results_df
+
+
 def save_model(model: CatBoostRegressor, model_path: str = 'catboost_model.cbm') -> None:
     """
     Сохраняет обученную модель CatBoost в файл.
@@ -361,9 +548,31 @@ def main():
             model_name="Улучшенная модель (RMSE)"
         )
 
-        # Шаг 5: Сохранение моделей
+        # Шаг 5: Подбор гиперпараметров для каждой категории
         logger.info("\n" + "=" * 60)
-        logger.info("Шаг 5: Сохранение моделей")
+        logger.info("Шаг 5: Подбор гиперпараметров для каждой категории")
+        logger.info("=" * 60)
+
+        category_models, category_metrics, category_results = train_catboost_per_category(
+            df,
+            target_col='SumRoubles',
+            category_col='CategoryID',
+            exclude_cols=['VisitDate']
+        )
+
+        # Сохранение лучших гиперпараметров по категориям в JSON файл
+        params_file = 'category_best_params.json'
+        with open(params_file, 'w', encoding='utf-8') as f:
+            json.dump(CATEGORY_BEST_PARAMS, f, indent=2, ensure_ascii=False)
+        logger.info(f"Лучшие гиперпараметры сохранены в файл: {params_file}")
+
+        # Вывод результатов подбора
+        logger.info("\nРезультаты подбора гиперпараметров по категориям:")
+        print(category_results.to_string(index=False))
+
+        # Шаг 6: Сохранение глобальных моделей
+        logger.info("\n" + "=" * 60)
+        logger.info("Шаг 6: Сохранение моделей")
         logger.info("=" * 60)
 
         base_model_path = 'catboost_model_base.cbm'
@@ -372,14 +581,21 @@ def main():
         save_model(model_base, base_model_path)
         save_model(model_new, new_model_path)
 
-        # Шаг 6: Вывод итоговой информации по моделям
+        # Сохранение моделей по категориям
+        category_models_dir = 'category_models'
+        os.makedirs(category_models_dir, exist_ok=True)
+        for cat_id, model in category_models.items():
+            cat_model_path = os.path.join(category_models_dir, f'catboost_model_cat_{cat_id}.cbm')
+            save_model(model, cat_model_path)
+
+        # Шаг 7: Вывод итоговой информации по моделям
         logger.info("\n" + "=" * 60)
         logger.info("Обучение моделей завершено успешно!")
         logger.info("=" * 60)
 
-        # Шаг 7: Прогнозирование на тестовых данных (выполняется всегда)
+        # Шаг 8: Прогнозирование на тестовых данных (выполняется всегда)
         logger.info("\n" + "=" * 60)
-        logger.info("Шаг 7: Прогнозирование на тестовых данных")
+        logger.info("Шаг 8: Прогнозирование на тестовых данных")
         logger.info("=" * 60)
 
         # Загружаем тестовые данные на текущую дату
@@ -422,6 +638,46 @@ def main():
             logger.info(f"Модель '{model_name}': выполнено {len(predictions)} предсказаний")
             logger.info(f"  Среднее: {np.mean(predictions):.4f}, Std: {np.std(predictions):.4f}")
 
+        # Шаг 9: Предсказание advanced с использованием моделей по категориям
+        logger.info("\n" + "=" * 60)
+        logger.info("Шаг 9: Предсказание advanced (модели по категориям)")
+        logger.info("=" * 60)
+
+        predictions_advanced = np.zeros(len(test_df))
+        logger.info(f"Выполнение предсказаний для {len(test_df)} записей...")
+
+        # Для каждой категории используем свою модель
+        for cat_id, cat_model in category_models.items():
+            # Фильтруем записи для данной категории
+            cat_mask = test_df['CategoryID'] == cat_id
+            cat_count = cat_mask.sum()
+            
+            if cat_count > 0:
+                logger.info(f"Категория {cat_id}: {cat_count} записей")
+                
+                # Получаем признаки для этой категории
+                X_test_cat = X_test[cat_mask]
+                
+                # Делаем предсказание
+                pred_cat = cat_model.predict(X_test_cat)
+                predictions_advanced[cat_mask] = pred_cat
+                
+                logger.info(f"  Среднее предсказание: {np.mean(pred_cat):.4f}, Std: {np.std(pred_cat):.4f}")
+        
+        # Проверяем, остались ли записи без предсказания (категории, для которых не было модели)
+        uncovered_mask = ~test_df['CategoryID'].isin(category_models.keys())
+        uncovered_count = uncovered_mask.sum()
+        if uncovered_count > 0:
+            logger.warning(f"{uncovered_count} записей имеют категории, для которых нет обученной модели.")
+            logger.warning("Используем базовую модель для этих записей...")
+            # Используем базовую модель для категорий без своей модели
+            predictions_advanced[uncovered_mask] = model_base.predict(X_test[uncovered_mask])
+
+        # Добавляем advanced предсказания в словарь
+        models_dict['advanced'] = (None, predictions_advanced)
+        logger.info(f"Advanced модель: выполнено {len(predictions_advanced)} предсказаний")
+        logger.info(f"  Среднее: {np.mean(predictions_advanced):.4f}, Std: {np.std(predictions_advanced):.4f}")
+
         # Расчет вероятности/уверенности прогноза (на основе улучшенной модели)
         predictions_new = models_dict['new'][1]
         mean_pred_new = np.mean(predictions_new)
@@ -430,7 +686,7 @@ def main():
 
         # Сохранение результатов от всех моделей в одну таблицу базы данных
         logger.info("\n" + "=" * 60)
-        logger.info("Шаг 8: Сохранение результатов от всех моделей в SNS_ML_Predictions")
+        logger.info("Шаг 10: Сохранение результатов от всех моделей в SNS_ML_Predictions")
         logger.info("=" * 60)
 
         # Создаем результирующий датафрейм для сохранения
