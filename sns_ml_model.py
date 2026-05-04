@@ -431,8 +431,7 @@ def train_stacking_ensemble(X: pd.DataFrame,
         'loss_function': 'RMSE',
         'eval_metric': 'RMSE',
         'verbose': 200,
-        'random_seed': random_seed,
-        'early_stopping_rounds': 30
+        'random_seed': random_seed
     }
     
     meta_model = CatBoostRegressor(**meta_params)
