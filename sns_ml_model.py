@@ -317,8 +317,7 @@ def train_stacking_ensemble(X: pd.DataFrame,
         'eval_metric': 'RMSE',
         'verbose': False,
         'cat_features': categorical_features if categorical_features else None,
-        'random_seed': random_seed,
-        'early_stopping_rounds': 50
+        'random_seed': random_seed
     }
     
     xgboost_params = {
@@ -328,7 +327,6 @@ def train_stacking_ensemble(X: pd.DataFrame,
         'objective': 'reg:squarederror',
         'eval_metric': 'rmse',
         'random_state': random_seed,
-        'early_stopping_rounds': 50,
         'verbosity': 0
     }
     
@@ -339,7 +337,6 @@ def train_stacking_ensemble(X: pd.DataFrame,
         'objective': 'regression',
         'metric': 'rmse',
         'random_state': random_seed,
-        'early_stopping_rounds': 50,
         'verbose': -1,
         'categorical_feature': categorical_features if categorical_features else 'auto'
     }
@@ -425,9 +422,9 @@ def train_stacking_ensemble(X: pd.DataFrame,
     # Мета-модель (CatBoost) обучается на предсказаниях базовых моделей
     logger.info("Обучение мета-модели...")
     meta_params = {
-        'iterations': 500,
+        'iterations': 1500,
         'depth': 4,
-        'learning_rate': 0.1,
+        'learning_rate': 0.05,
         'loss_function': 'RMSE',
         'eval_metric': 'RMSE',
         'verbose': 200,
