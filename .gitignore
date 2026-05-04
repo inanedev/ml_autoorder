@@ -1,10 +1,1 @@
-```
-# Compiled Python files
-__pycache__/
-*.pyc
-*.pyo
-
-# CatBoost training artifacts
-catboost_info/
-*.cbm
-```
+Nothing should be ignored based on the provided file changes. The only modified file is `sns_ml_model.py`, which is a Python source code file and should not be added to .gitignore.

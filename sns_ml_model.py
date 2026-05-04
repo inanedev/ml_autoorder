@@ -349,7 +349,7 @@ def train_stacking_ensemble(X: pd.DataFrame,
         oof_predictions['xgboost'][val_idx] = xgboost_model.predict(X_fold_val_encoded)
         
         # LightGBM (работает с кодированными числовыми данными)
-        lightgbm_model.fit(X_fold_train_encoded, y_fold_train, eval_set=[(X_fold_val_encoded, y_fold_val)], verbose=False)
+        lightgbm_model.fit(X_fold_train_encoded, y_fold_train, eval_set=[(X_fold_val_encoded, y_fold_val)])
         oof_predictions['lightgbm'][val_idx] = lightgbm_model.predict(X_fold_val_encoded)
         
         # Метрики для каждого fold
@@ -384,7 +384,7 @@ def train_stacking_ensemble(X: pd.DataFrame,
     
     # LightGBM на полных данных (работает с кодированными числовыми данными)
     lightgbm_final = LGBMRegressor(**lightgbm_params)
-    lightgbm_final.fit(X_encoded, y, verbose=False)
+    lightgbm_final.fit(X_encoded, y)
     base_models['lightgbm'] = lightgbm_final
     
     # Мета-модель (CatBoost) обучается на предсказаниях базовых моделей
