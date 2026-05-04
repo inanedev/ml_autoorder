@@ -136,8 +136,7 @@ def train_catboost_model(X: pd.DataFrame,
                          depth: int = 8,
                          learning_rate: float = 0.05,
                          random_seed: int = 42,
-                         delta: float = 1.345,
-                         loss_function: str = 'Huber',
+                         loss_function: str = 'Huber:delta=1.345',
                          model_name: str = "") -> Tuple[CatBoostRegressor, dict]:
     """
     Обучает модель CatBoost с использованием кросс-валидации на временных рядах.
@@ -570,7 +569,7 @@ def main():
         
         # Шаг 3: Обучение базовой модели (MAE)
         logger.info("\n" + "=" * 60)
-        logger.info("Шаг 3: Обучение базовой модели CatBoost (MAE)")
+        logger.info("Шаг 3: Обучение базовой модели CatBoost (HUBER)")
         logger.info("=" * 60)
 
         model_base, metrics_base = train_catboost_model(
@@ -580,9 +579,8 @@ def main():
             iterations=1500,
             depth=8,
             learning_rate=0.05,
-            delta = 1.345,
             random_seed=42,
-            loss_function='Huber',
+            loss_function='Huber:delta=1.345',
             model_name="Базовая модель (Huber)"
         )
 
