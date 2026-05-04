@@ -18,6 +18,15 @@ from catboost import CatBoostRegressor, Pool
 from sklearn.model_selection import TimeSeriesSplit, KFold
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+# Импорты для ансамблирования (XGBoost, LightGBM)
+try:
+    from xgboost import XGBRegressor
+    from lightgbm import LGBMRegressor
+    STACKING_AVAILABLE = True
+except ImportError:
+    STACKING_AVAILABLE = False
+    logger.warning("XGBoost или LightGBM не установлены. Ансамблирование будет недоступно.")
+
 # Загрузка переменных окружения из .env файла
 load_dotenv()
 
@@ -212,6 +221,206 @@ def train_catboost_model(X: pd.DataFrame,
     return final_model, metrics
 
 
+def train_stacking_ensemble(X: pd.DataFrame, 
+                            y: pd.Series, 
+                            categorical_features: List[int],
+                            n_splits: int = 5,
+                            random_seed: int = 42,
+                            model_name: str = "Advanced") -> Tuple[dict, pd.DataFrame, dict]:
+    """
+    Обучает ансамбль моделей (CatBoost + XGBoost + LightGBM) с использованием стекинга.
+    
+    Стекинг работает следующим образом:
+    1. Обучаются 3 базовые модели (CatBoost, XGBoost, LightGBM) с кросс-валидацией
+    2. Для каждой модели получаем out-of-fold предсказания
+    3. Эти предсказания используются как признаки для мета-модели (CatBoost)
+    4. Мета-модель обучается на предсказаниях базовых моделей
+    
+    Args:
+        X: Датафрейм с признаками
+        y: Серия с целевой переменной
+        categorical_features: Список индексов категориальных признаков
+        n_splits: Количество фолдов для кросс-валидации
+        random_seed: Случайное зерно
+        model_name: Имя модели для логгирования
+        
+    Returns:
+        Кортеж (base_models, meta_model, metrics):
+            - base_models: Словарь с обученными базовыми моделями
+            - meta_predictions: DataFrame с предсказаниями базовых моделей для мета-обучения
+            - metrics: Словарь с метриками качества ансамбля
+    """
+    logger.info(f"Обучение модели {model_name} (Stacking Ensemble)...")
+    
+    if not STACKING_AVAILABLE:
+        logger.error("XGBoost или LightGBM не установлены. Обучение ансамбля невозможно.")
+        raise ImportError("XGBoost или LightGBM не установлены")
+    
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    
+    # Параметры базовых моделей
+    catboost_params = {
+        'iterations': 1500,
+        'depth': 8,
+        'learning_rate': 0.05,
+        'loss_function': 'RMSE',
+        'eval_metric': 'RMSE',
+        'verbose': False,
+        'cat_features': categorical_features if categorical_features else None,
+        'random_seed': random_seed,
+        'early_stopping_rounds': 50
+    }
+    
+    xgboost_params = {
+        'n_estimators': 1500,
+        'max_depth': 8,
+        'learning_rate': 0.05,
+        'objective': 'reg:squarederror',
+        'eval_metric': 'rmse',
+        'random_state': random_seed,
+        'early_stopping_rounds': 50,
+        'verbosity': 0
+    }
+    
+    lightgbm_params = {
+        'n_estimators': 1500,
+        'max_depth': 8,
+        'learning_rate': 0.05,
+        'objective': 'regression',
+        'metric': 'rmse',
+        'random_state': random_seed,
+        'early_stopping_rounds': 50,
+        'verbose': -1,
+        'categorical_feature': categorical_features if categorical_features else 'auto'
+    }
+    
+    # Инициализация моделей
+    catboost_model = CatBoostRegressor(**catboost_params)
+    xgboost_model = XGBRegressor(**xgboost_params)
+    lightgbm_model = LGBMRegressor(**lightgbm_params)
+    
+    base_models = {
+        'catboost': catboost_model,
+        'xgboost': xgboost_model,
+        'lightgbm': lightgbm_model
+    }
+    
+    # Out-of-fold предсказания для каждой модели
+    oof_predictions = {name: np.zeros(len(X)) for name in base_models.keys()}
+    
+    # Метрики для каждой модели
+    model_metrics = {name: {'mae': [], 'rmse': [], 'r2': []} for name in base_models.keys()}
+    
+    logger.info(f"Проведение кросс-валидации для базовых моделей ({n_splits} folds)...")
+    
+    for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(X)):
+        X_fold_train = X.iloc[train_idx]
+        X_fold_val = X.iloc[val_idx]
+        y_fold_train = y.iloc[train_idx]
+        y_fold_val = y.iloc[val_idx]
+        
+        logger.info(f"\nFold {fold_idx+1}:")
+        
+        # CatBoost
+        train_pool_cb = Pool(X_fold_train, y_fold_train, cat_features=categorical_features if categorical_features else None)
+        val_pool_cb = Pool(X_fold_val, y_fold_val, cat_features=categorical_features if categorical_features else None)
+        catboost_model.fit(train_pool_cb, eval_set=val_pool_cb, verbose=False)
+        oof_predictions['catboost'][val_idx] = catboost_model.predict(val_pool_cb)
+        
+        # XGBoost
+        xgboost_model.fit(X_fold_train, y_fold_train, eval_set=[(X_fold_val, y_fold_val)], verbose=False)
+        oof_predictions['xgboost'][val_idx] = xgboost_model.predict(X_fold_val)
+        
+        # LightGBM
+        lightgbm_model.fit(X_fold_train, y_fold_train, eval_set=[(X_fold_val, y_fold_val)], verbose=False)
+        oof_predictions['lightgbm'][val_idx] = lightgbm_model.predict(X_fold_val)
+        
+        # Метрики для каждого fold
+        for name, preds in oof_predictions.items():
+            fold_preds = preds[val_idx]
+            mae_fold = mean_absolute_error(y_fold_val, fold_preds)
+            rmse_fold = np.sqrt(mean_squared_error(y_fold_val, fold_preds))
+            r2_fold = r2_score(y_fold_val, fold_preds)
+            model_metrics[name]['mae'].append(mae_fold)
+            model_metrics[name]['rmse'].append(rmse_fold)
+            model_metrics[name]['r2'].append(r2_fold)
+            logger.info(f"  {name}: MAE={mae_fold:.4f}, RMSE={rmse_fold:.4f}, R²={r2_fold:.4f}")
+    
+    # Создаем DataFrame с out-of-fold предсказаниями для мета-обучения
+    meta_df = pd.DataFrame(oof_predictions)
+    meta_df.columns = [f'pred_{name}' for name in meta_df.columns]
+    
+    # Обучаем финальные модели на всех данных
+    logger.info("\nФинальное обучение базовых моделей на всей выборке...")
+    
+    train_pool_full = Pool(X, y, cat_features=categorical_features if categorical_features else None)
+    
+    # CatBoost на полных данных
+    catboost_final = CatBoostRegressor(**catboost_params)
+    catboost_final.fit(train_pool_full, verbose=200)
+    base_models['catboost'] = catboost_final
+    
+    # XGBoost на полных данных
+    xgboost_final = XGBRegressor(**xgboost_params)
+    xgboost_final.fit(X, y, verbose=False)
+    base_models['xgboost'] = xgboost_final
+    
+    # LightGBM на полных данных
+    lightgbm_final = LGBMRegressor(**lightgbm_params)
+    lightgbm_final.fit(X, y, verbose=False)
+    base_models['lightgbm'] = lightgbm_final
+    
+    # Мета-модель (CatBoost) обучается на предсказаниях базовых моделей
+    logger.info("Обучение мета-модели...")
+    meta_params = {
+        'iterations': 500,
+        'depth': 4,
+        'learning_rate': 0.1,
+        'loss_function': 'RMSE',
+        'eval_metric': 'RMSE',
+        'verbose': 200,
+        'random_seed': random_seed,
+        'early_stopping_rounds': 30
+    }
+    
+    meta_model = CatBoostRegressor(**meta_params)
+    meta_pool = Pool(meta_df, y, cat_features=None)
+    meta_model.fit(meta_pool, verbose=200)
+    
+    # Финальные предсказания ансамбля через мета-модель
+    ensemble_predictions = meta_model.predict(meta_df)
+    
+    # Расчет итоговых метрик ансамбля
+    ensemble_mae = mean_absolute_error(y, ensemble_predictions)
+    ensemble_rmse = np.sqrt(mean_squared_error(y, ensemble_predictions))
+    ensemble_r2 = r2_score(y, ensemble_predictions)
+    
+    metrics = {
+        'ensemble_mae': ensemble_mae,
+        'ensemble_rmse': ensemble_rmse,
+        'ensemble_r2': ensemble_r2,
+        'base_models_metrics': {}
+    }
+    
+    for name in base_models.keys():
+        metrics['base_models_metrics'][name] = {
+            'mae_mean': np.mean(model_metrics[name]['mae']),
+            'rmse_mean': np.mean(model_metrics[name]['rmse']),
+            'r2_mean': np.mean(model_metrics[name]['r2'])
+        }
+    
+    logger.info(f"\nМетрики ансамбля {model_name}:")
+    logger.info(f"  MAE: {ensemble_mae:.4f}")
+    logger.info(f"  RMSE: {ensemble_rmse:.4f}")
+    logger.info(f"  R²: {ensemble_r2:.4f}")
+    
+    logger.info("\nМетрики базовых моделей (CV среднее):")
+    for name, m in metrics['base_models_metrics'].items():
+        logger.info(f"  {name}: MAE={m['mae_mean']:.4f}, RMSE={m['rmse_mean']:.4f}, R²={m['r2_mean']:.4f}")
+    
+    return base_models, meta_model, meta_df, metrics
+
+
 def save_model(model: CatBoostRegressor, model_path: str = 'catboost_model.cbm') -> None:
     """
     Сохраняет обученную модель CatBoost в файл.
@@ -353,49 +562,48 @@ def main():
         save_model(model_base, base_model_path)
         save_model(model_new, new_model_path)
 
-        # Шаг 6: Вывод итоговой информации по обеим моделям
+        # Шаг 6: Обучение модели Advanced (Stacking Ensemble)
         logger.info("\n" + "=" * 60)
-        logger.info("Итоговые метрики базовой модели (MAE)")
-        logger.info("=" * 60)
-        logger.info(f"MAE: {metrics_base['mae_mean']:.4f} (+/- {metrics_base['mae_std']:.4f})")
-        logger.info(f"RMSE: {metrics_base['rmse_mean']:.4f} (+/- {metrics_base['rmse_std']:.4f})")
-        logger.info(f"R²: {metrics_base['r2_mean']:.4f} (+/- {metrics_base['r2_std']:.4f})")
-
-        logger.info("\n" + "=" * 60)
-        logger.info("Итоговые метрики улучшенной модели (RMSE)")
-        logger.info("=" * 60)
-        logger.info(f"MAE: {metrics_new['mae_mean']:.4f} (+/- {metrics_new['mae_std']:.4f})")
-        logger.info(f"RMSE: {metrics_new['rmse_mean']:.4f} (+/- {metrics_new['rmse_std']:.4f})")
-        logger.info(f"R²: {metrics_new['r2_mean']:.4f} (+/- {metrics_new['r2_std']:.4f})")
-
-        # Важность признаков для базовой модели
-        logger.info("\n" + "=" * 60)
-        logger.info("Важность признаков - Базовая модель (топ-15)")
+        logger.info("Шаг 6: Обучение модели Advanced (Stacking Ensemble)")
         logger.info("=" * 60)
 
-        feature_importance_base = model_base.get_feature_importance()
-        importance_df_base = pd.DataFrame({
-            'Feature': feature_names,
-            'Importance': feature_importance_base
-        }).sort_values('Importance', ascending=False)
+        if STACKING_AVAILABLE:
+            try:
+                base_models, meta_model, meta_df, metrics_advanced = train_stacking_ensemble(
+                    X, y,
+                    categorical_features=categorical_features,
+                    n_splits=5,
+                    random_seed=42,
+                    model_name="Advanced"
+                )
+                
+                logger.info("\n" + "=" * 60)
+                logger.info("Метрики модели Advanced (Stacking Ensemble)")
+                logger.info("=" * 60)
+                logger.info(f"MAE: {metrics_advanced['ensemble_mae']:.4f}")
+                logger.info(f"RMSE: {metrics_advanced['ensemble_rmse']:.4f}")
+                logger.info(f"R²: {metrics_advanced['ensemble_r2']:.4f}")
+                
+                # Сохраняем мета-модель
+                advanced_model_path = 'catboost_model_advanced.cbm'
+                save_model(meta_model, advanced_model_path)
+                logger.info(f"Мета-модель Advanced сохранена в файл: {advanced_model_path}")
+                
+            except Exception as e:
+                logger.error(f"Ошибка при обучении ансамбля: {e}")
+                logger.warning("Продолжаем работу без модели Advanced")
+                base_models = None
+                meta_model = None
+                meta_df = None
+        else:
+            logger.warning("XGBoost или LightGBM не установлены. Пропускаем обучение модели Advanced.")
+            base_models = None
+            meta_model = None
+            meta_df = None
 
-        print(importance_df_base.head(15).to_string(index=False))
-
-        # Важность признаков для улучшенной модели
+        # Шаг 7: Вывод итоговой информации по всем моделям
         logger.info("\n" + "=" * 60)
-        logger.info("Важность признаков - Улучшенная модель (топ-15)")
-        logger.info("=" * 60)
-
-        feature_importance_new = model_new.get_feature_importance()
-        importance_df_new = pd.DataFrame({
-            'Feature': feature_names,
-            'Importance': feature_importance_new
-        }).sort_values('Importance', ascending=False)
-
-        print(importance_df_new.head(15).to_string(index=False))
-
-        logger.info("\n" + "=" * 60)
-        logger.info("Обучение обеих моделей завершено успешно!")
+        logger.info("Обучение всех моделей завершено успешно!")
         logger.info("=" * 60)
 
         # Шаг 7: Прогнозирование на тестовых данных (выполняется всегда)
@@ -438,10 +646,34 @@ def main():
             'new': (model_new, model_new.predict(X_test))
         }
 
+        # Добавляем предсказания модели Advanced (Stacking Ensemble)
+        if STACKING_AVAILABLE and base_models is not None and meta_model is not None:
+            logger.info("\nГенерация предсказаний модели Advanced...")
+            
+            # Получаем предсказания от базовых моделей
+            pred_catboost = base_models['catboost'].predict(X_test)
+            pred_xgboost = base_models['xgboost'].predict(X_test)
+            pred_lightgbm = base_models['lightgbm'].predict(X_test)
+            
+            # Создаем DataFrame для мета-модели
+            meta_test_df = pd.DataFrame({
+                'pred_catboost': pred_catboost,
+                'pred_xgboost': pred_xgboost,
+                'pred_lightgbm': pred_lightgbm
+            })
+            
+            # Получаем финальное предсказание ансамбля через мета-модель
+            predictions_advanced = meta_model.predict(meta_test_df)
+            
+            models_dict['advanced'] = (meta_model, predictions_advanced)
+            logger.info(f"Модель 'advanced': выполнено {len(predictions_advanced)} предсказаний")
+            logger.info(f"  Среднее: {np.mean(predictions_advanced):.4f}, Std: {np.std(predictions_advanced):.4f}")
+
         # Логирование предсказаний
         for model_name, (model_obj, predictions) in models_dict.items():
-            logger.info(f"Модель '{model_name}': выполнено {len(predictions)} предсказаний")
-            logger.info(f"  Среднее: {np.mean(predictions):.4f}, Std: {np.std(predictions):.4f}")
+            if model_name not in ['advanced']:  # advanced уже залогирован
+                logger.info(f"Модель '{model_name}': выполнено {len(predictions)} предсказаний")
+                logger.info(f"  Среднее: {np.mean(predictions):.4f}, Std: {np.std(predictions):.4f}")
 
         # Расчет вероятности/уверенности прогноза (на основе улучшенной модели)
         predictions_new = models_dict['new'][1]
