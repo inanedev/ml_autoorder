@@ -263,10 +263,11 @@ def train_stacking_ensemble(X: pd.DataFrame,
         model_name: Имя модели для логгирования
         
     Returns:
-        Кортеж (base_models, meta_model, metrics):
+        Кортеж (base_models, meta_model, meta_df, metrics, label_encoders):
             - base_models: Словарь с обученными базовыми моделями
-            - meta_predictions: DataFrame с предсказаниями базовых моделей для мета-обучения
+            - meta_df: DataFrame с предсказаниями базовых моделей для мета-обучения
             - metrics: Словарь с метриками качества ансамбля
+            - label_encoders: Словарь с LabelEncoder для кодирования категориальных признаков
     """
     logger.info(f"Обучение модели {model_name} (Stacking Ensemble)...")
     
@@ -466,7 +467,7 @@ def train_stacking_ensemble(X: pd.DataFrame,
     for name, m in metrics['base_models_metrics'].items():
         logger.info(f"  {name}: MAE={m['mae_mean']:.4f}, RMSE={m['rmse_mean']:.4f}, R²={m['r2_mean']:.4f}")
     
-    return base_models, meta_model, meta_df, metrics
+    return base_models, meta_model, meta_df, metrics, label_encoders
 
 
 def save_model(model: CatBoostRegressor, model_path: str = 'catboost_model.cbm') -> None:
@@ -617,7 +618,7 @@ def main():
 
         if STACKING_AVAILABLE:
             try:
-                base_models, meta_model, meta_df, metrics_advanced = train_stacking_ensemble(
+                base_models, meta_model, meta_df, metrics_advanced, label_encoders = train_stacking_ensemble(
                     X, y,
                     categorical_features=categorical_features,
                     n_splits=5,
@@ -643,11 +644,13 @@ def main():
                 base_models = None
                 meta_model = None
                 meta_df = None
+                label_encoders = None
         else:
             logger.warning("XGBoost или LightGBM не установлены. Пропускаем обучение модели Advanced.")
             base_models = None
             meta_model = None
             meta_df = None
+            label_encoders = None
 
         # Шаг 7: Вывод итоговой информации по всем моделям
         logger.info("\n" + "=" * 60)
