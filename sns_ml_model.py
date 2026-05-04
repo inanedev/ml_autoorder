@@ -96,6 +96,24 @@ def prepare_data_for_training(df: pd.DataFrame,
     X = df_clean[feature_cols].copy()
     y = df_clean[target_col].copy()
     
+    # Преобразуем целевую переменную в числовой тип (требуется для XGBoost/LightGBM)
+    if y.dtype == 'object':
+        logger.info(f"Преобразование целевой переменной '{target_col}' из object в numeric...")
+        # Сначала пробуем заменить запятые на точки (для европейского формата чисел)
+        y = y.astype(str).str.replace(',', '.').str.strip()
+        y = pd.to_numeric(y, errors='coerce')
+        # Удаляем строки с NaN после преобразования
+        valid_mask = ~y.isna()
+        if not valid_mask.all():
+            logger.warning(f"Удалено {(~valid_mask).sum()} строк с нечисловыми значениями в целевой переменной")
+            y = y[valid_mask]
+            X = X[valid_mask]
+    
+    # Дополнительная проверка: убеждаемся, что y имеет правильный тип для sklearn/lightgbm/xgboost
+    if str(y.dtype) not in ['int64', 'float64', 'int32', 'float32', 'bool']:
+        logger.warning(f"Целевая переменная имеет тип {y.dtype}, пробуем преобразовать в float64...")
+        y = y.astype('float64')
+    
     # Преобразуем категориальные признаки в строковый тип для корректной обработки CatBoost
     # Заполняем NaN значением 'Unknown' перед конвертацией в строку
     for idx in categorical_features:
@@ -255,6 +273,23 @@ def train_stacking_ensemble(X: pd.DataFrame,
     if not STACKING_AVAILABLE:
         logger.error("XGBoost или LightGBM не установлены. Обучение ансамбля невозможно.")
         raise ImportError("XGBoost или LightGBM не установлены")
+    
+    # Преобразуем целевую переменную в числовой тип (требуется для XGBoost/LightGBM)
+    # Эта проверка дублирует логику из prepare_data_for_training, но нужна для надежности
+    if y.dtype == 'object':
+        logger.info(f"Преобразование целевой переменной из object в numeric в train_stacking_ensemble...")
+        y = y.astype(str).str.replace(',', '.').str.strip()
+        y = pd.to_numeric(y, errors='coerce')
+        if y.isna().any():
+            logger.warning(f"В целевой переменной обнаружены нечисловые значения, они будут удалены")
+            valid_mask = ~y.isna()
+            y = y[valid_mask]
+            X = X[valid_mask]
+    
+    # Дополнительная проверка типа
+    if str(y.dtype) not in ['int64', 'float64', 'int32', 'float32', 'bool']:
+        logger.warning(f"Целевая переменная имеет тип {y.dtype}, преобразуем в float64...")
+        y = y.astype('float64')
     
     # Создаем копию данных с кодированными категориальными признаками для XGBoost/LightGBM
     # CatBoost работает со строковыми категориальными признаками, а XGBoost/LightGBM требуют числовые
