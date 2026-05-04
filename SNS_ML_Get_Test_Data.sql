@@ -40,6 +40,16 @@ GO
  *   DayOfYear                     - День года (1-366)
  *   isEndOfMonth                  - Бинарная фича: последние 3 дня месяца или первые 2 дня месяца, 
  *                                   если до конца недели <= 2 дней, либо последняя суббота месяца
+ *   DayOfYear_sin                 - Синус дня года (циклический признак для сезонности)
+ *   DayOfYear_cos                 - Косинус дня года (циклический признак для сезонности)
+ *   Month_sin                     - Синус месяца (циклический признак для месячной сезонности)
+ *   Month_cos                     - Косинус месяца (циклический признак для месячной сезонности)
+ *   DayOfWeek_sin                 - Синус дня недели (циклический признак для недельной сезонности)
+ *   DayOfWeek_cos                 - Косинус дня недели (циклический признак для недельной сезонности)
+ *   
+ *   Циклические признаки (синус/косинус) кодируют циклическую природу времени,
+ *   чтобы модель понимала близость значений на границах циклов (например,
+ *   воскресенье близко к понедельнику, декабрь близок к январю).
  *   
  *   === Фичи посещений (из add_visit_features) ===
  *   DaysLastVisit                 - Количество дней с предыдущего VisitDate для PointID (если первое посещение = 7)
@@ -514,6 +524,14 @@ BEGIN
             rb.DayOfMonth,
             rb.DayOfYear,
             rb.isEndOfMonth,
+            
+            -- Циклические временные признаки (синус/косинус)
+            SIN(2.0 * PI() * CAST(rb.DayOfYear AS FLOAT) / 366.0) AS DayOfYear_sin,
+            COS(2.0 * PI() * CAST(rb.DayOfYear AS FLOAT) / 366.0) AS DayOfYear_cos,
+            SIN(2.0 * PI() * CAST(rb.Month AS FLOAT) / 12.0) AS Month_sin,
+            COS(2.0 * PI() * CAST(rb.Month AS FLOAT) / 12.0) AS Month_cos,
+            SIN(2.0 * PI() * CAST(rb.DayOfWeek AS FLOAT) / 7.0) AS DayOfWeek_sin,
+            COS(2.0 * PI() * CAST(rb.DayOfWeek AS FLOAT) / 7.0) AS DayOfWeek_cos,
             
             -- Фичи посещений (DaysLastVisit, DaysNextVisit)
             ISNULL(vws.DaysLastVisit, 7) AS DaysLastVisit,
