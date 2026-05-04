@@ -18,14 +18,7 @@ from catboost import CatBoostRegressor, Pool
 from sklearn.model_selection import TimeSeriesSplit, KFold
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-# Импорты для ансамблирования (XGBoost, LightGBM)
-try:
-    from xgboost import XGBRegressor
-    from lightgbm import LGBMRegressor
-    STACKING_AVAILABLE = True
-except ImportError:
-    STACKING_AVAILABLE = False
-    logger.warning("XGBoost или LightGBM не установлены. Ансамблирование будет недоступно.")
+
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
@@ -37,6 +30,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Импорты для ансамблирования (XGBoost, LightGBM)
+try:
+    from xgboost import XGBRegressor
+    from lightgbm import LGBMRegressor
+    STACKING_AVAILABLE = True
+except ImportError:
+    STACKING_AVAILABLE = False
+    logger.warning("XGBoost или LightGBM не установлены. Ансамблирование будет недоступно.")
 
 def prepare_data_for_training(df: pd.DataFrame, 
                                target_col: str = 'SumRoubles',
@@ -131,11 +132,12 @@ def train_catboost_model(X: pd.DataFrame,
                          y: pd.Series, 
                          categorical_features: List[int],
                          n_splits: int = 5,
-                         iterations: int = 1000,
-                         depth: int = 6,
-                         learning_rate: float = 0.1,
+                         iterations: int = 1500,
+                         depth: int = 8,
+                         learning_rate: float = 0.05,
                          random_seed: int = 42,
-                         loss_function: str = 'MAE',
+                         delta: float = 1.345,
+                         loss_function: str = 'Huber',
                          model_name: str = "") -> Tuple[CatBoostRegressor, dict]:
     """
     Обучает модель CatBoost с использованием кросс-валидации на временных рядах.
@@ -575,12 +577,13 @@ def main():
             X, y,
             categorical_features=categorical_features,
             n_splits=5,
-            iterations=1000,
-            depth=6,
-            learning_rate=0.1,
+            iterations=1500,
+            depth=8,
+            learning_rate=0.05,
+            delta = 1.345,
             random_seed=42,
-            loss_function='MAE',
-            model_name="Базовая модель (MAE)"
+            loss_function='Huber',
+            model_name="Базовая модель (Huber)"
         )
 
         # Шаг 4: Обучение улучшенной модели (RMSE с другими параметрами)
@@ -616,7 +619,7 @@ def main():
         logger.info("Шаг 6: Обучение модели Advanced (Stacking Ensemble)")
         logger.info("=" * 60)
 
-        if STACKING_AVAILABLE:
+        if 1==0: #STACKING_AVAILABLE:
             try:
                 base_models, meta_model, meta_df, metrics_advanced, label_encoders = train_stacking_ensemble(
                     X, y,
