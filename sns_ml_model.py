@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 try:
     from xgboost import XGBRegressor
     from lightgbm import LGBMRegressor
-    STACKING_AVAILABLE = True
+    STACKING_AVAILABLE = False
 except ImportError:
     STACKING_AVAILABLE = False
     logger.warning("XGBoost или LightGBM не установлены. Ансамблирование будет недоступно.")
@@ -619,7 +619,7 @@ def main():
         logger.info("Шаг 6: Обучение модели Advanced (Stacking Ensemble)")
         logger.info("=" * 60)
 
-        if 1==0: #STACKING_AVAILABLE:
+        if STACKING_AVAILABLE:
             try:
                 base_models, meta_model, meta_df, metrics_advanced, label_encoders = train_stacking_ensemble(
                     X, y,
