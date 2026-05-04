@@ -14,10 +14,6 @@ __pycache__/
 .env.local
 *.env.*
 
-# Editors
-.vscode/
-.idea/
-
 # Dependencies
 .venv/
 venv/
@@ -28,7 +24,11 @@ dist/
 build/
 target/
 
-# OS generated files
+# Editors
+.vscode/
+.idea/
+
+# OS
 .DS_Store
 Thumbs.db
 ```
