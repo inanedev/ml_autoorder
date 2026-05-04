@@ -1,65 +1,10 @@
-# Compiled and build artifacts
-*.pyc
+```
+# Compiled Python files
 __pycache__/
-*.o
-*.obj
-*.out
-*.so
-*.dll
-*.exe
+*.pyc
+*.pyo
 
-# Dependencies
-.venv/
-venv/
-.env
-.env.local
-*.env.*
-
-# Logs and temp files
-*.log
-*.tmp
-*.swp
-
-# Editors
-.vscode/
-.idea/
-
-# Coverage and testing
-.coverage
-coverage/
-htmlcov/
-.pytest_cache/
-.mypy_cache/
-
-# Distribution artifacts
-dist/
-build/
-target/
-.gradle/
-
-# Node.js
-node_modules/
-
-# Compression files
-*.zip
-*.gz
-*.tar
-*.tgz
-*.bz2
-*.xz
-*.7z
-*.rar
-*.zst
-*.lz4
-*.lzh
-*.cab
-*.arj
-*.rpm
-*.deb
-*.Z
-*.lz
-*.lzo
-*.tar.gz
-*.tar.bz2
-*.tar.xz
-*.tar.zst
+# CatBoost training artifacts
+catboost_info/
+*.cbm
+```
