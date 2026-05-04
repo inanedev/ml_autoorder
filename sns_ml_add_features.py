@@ -155,6 +155,10 @@ def add_calendar_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate') -
     17. Month_cos - косинус месяца (циклический признак для месячной сезонности)
     18. DayOfWeek_sin - синус дня недели (циклический признак для недельной сезонности)
     19. DayOfWeek_cos - косинус дня недели (циклический признак для недельной сезонности)
+    20. WeekOfYear_sin - синус недели года (циклический признак для годовой сезонности)
+    21. WeekOfYear_cos - косинус недели года (циклический признак для годовой сезонности)
+    22. Quarter_sin - синус квартала (циклический признак для квартальной сезонности)
+    23. Quarter_cos - косинус квартала (циклический признак для квартальной сезонности)
     
     Циклические признаки (синус/косинус) кодируют циклическую природу времени,
     чтобы модель понимала близость значений на границах циклов (например, 
@@ -283,7 +287,7 @@ def add_calendar_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate') -
     result_df['IsPreHoliday'] = is_pre_holiday
     result_df['IsPostHoliday'] = is_post_holiday
     
-    # 2.14-2.19 Циклические временные признаки (синус/косинус)
+    # 2.14-2.23 Циклические временные признаки (синус/косинус)
     # Эти признаки кодируют циклическую природу времени, чтобы модель понимала,
     # что например воскресенье близко к понедельнику, а декабрь близок к январю
     
@@ -302,8 +306,18 @@ def add_calendar_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate') -
     result_df['DayOfWeek_sin'] = np.sin(2 * np.pi * day_of_week / 7)
     result_df['DayOfWeek_cos'] = np.cos(2 * np.pi * day_of_week / 7)
     
-    logger.info(f"Успешно добавлено 19 календарных признаков")
-    logger.info(f"Новые колонки: {['DayOfWeek', 'IsFriday', 'IsMonday', 'DaysToNextHoliday', 'DaysSinceLastHoliday', 'IsPreHoliday', 'IsPostHoliday', 'Quarter', 'Month', 'WeekOfYear', 'DayOfMonth', 'DayOfYear', 'isEndOfMonth', 'DayOfYear_sin', 'DayOfYear_cos', 'Month_sin', 'Month_cos', 'DayOfWeek_sin', 'DayOfWeek_cos']}")
+    # Неделя года (1-53) -> синус и косинус (циклический признак для годовой сезонности)
+    week_of_year = result_df['WeekOfYear'].astype(float)
+    result_df['WeekOfYear_sin'] = np.sin(2 * np.pi * week_of_year / 53)
+    result_df['WeekOfYear_cos'] = np.cos(2 * np.pi * week_of_year / 53)
+    
+    # Квартал (1-4) -> синус и косинус (циклический признак для квартальной сезонности)
+    quarter = result_df['Quarter'].astype(float)
+    result_df['Quarter_sin'] = np.sin(2 * np.pi * quarter / 4)
+    result_df['Quarter_cos'] = np.cos(2 * np.pi * quarter / 4)
+    
+    logger.info(f"Успешно добавлено 23 календарных признаков")
+    logger.info(f"Новые колонки: {['DayOfWeek', 'IsFriday', 'IsMonday', 'DaysToNextHoliday', 'DaysSinceLastHoliday', 'IsPreHoliday', 'IsPostHoliday', 'Quarter', 'Month', 'WeekOfYear', 'DayOfMonth', 'DayOfYear', 'isEndOfMonth', 'DayOfYear_sin', 'DayOfYear_cos', 'Month_sin', 'Month_cos', 'DayOfWeek_sin', 'DayOfWeek_cos', 'WeekOfYear_sin', 'WeekOfYear_cos', 'Quarter_sin', 'Quarter_cos']}")
     
     return result_df
 

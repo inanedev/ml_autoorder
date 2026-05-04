@@ -46,6 +46,10 @@ GO
  *   Month_cos                     - Косинус месяца (циклический признак для месячной сезонности)
  *   DayOfWeek_sin                 - Синус дня недели (циклический признак для недельной сезонности)
  *   DayOfWeek_cos                 - Косинус дня недели (циклический признак для недельной сезонности)
+ *   WeekOfYear_sin                - Синус недели года (циклический признак для годовой сезонности)
+ *   WeekOfYear_cos                - Косинус недели года (циклический признак для годовой сезонности)
+ *   Quarter_sin                   - Синус квартала (циклический признак для квартальной сезонности)
+ *   Quarter_cos                   - Косинус квартала (циклический признак для квартальной сезонности)
  *   
  *   Циклические признаки (синус/косинус) кодируют циклическую природу времени,
  *   чтобы модель понимала близость значений на границах циклов (например,
@@ -532,6 +536,10 @@ BEGIN
             COS(2.0 * PI() * CAST(rb.Month AS FLOAT) / 12.0) AS Month_cos,
             SIN(2.0 * PI() * CAST(rb.DayOfWeek AS FLOAT) / 7.0) AS DayOfWeek_sin,
             COS(2.0 * PI() * CAST(rb.DayOfWeek AS FLOAT) / 7.0) AS DayOfWeek_cos,
+            SIN(2.0 * PI() * CAST(rb.WeekOfYear AS FLOAT) / 53.0) AS WeekOfYear_sin,
+            COS(2.0 * PI() * CAST(rb.WeekOfYear AS FLOAT) / 53.0) AS WeekOfYear_cos,
+            SIN(2.0 * PI() * CAST(rb.Quarter AS FLOAT) / 4.0) AS Quarter_sin,
+            COS(2.0 * PI() * CAST(rb.Quarter AS FLOAT) / 4.0) AS Quarter_cos,
             
             -- Фичи посещений (DaysLastVisit, DaysNextVisit)
             ISNULL(vws.DaysLastVisit, 7) AS DaysLastVisit,
