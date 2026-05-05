@@ -350,7 +350,7 @@ def tune_huber_alpha(X: pd.DataFrame,
     
     # ==================== ФИНАЛЬНОЕ ОБУЧЕНИЕ НА ВСЕЙ ВЫБОРКЕ ====================
     # Обучаем модель один раз с лучшим найденным параметром
-    logger.info(f"\\nФинальное обучение модели с лучшим delta={best_alpha:.3f} на всей выборке...")
+    logger.info(f"\nФинальное обучение модели с лучшим delta={best_alpha:.3f} на всей выборке...")
     train_pool_full = Pool(X, y, cat_features=categorical_features if categorical_features else None)
     best_model = CatBoostRegressor(**{**base_params, 'loss_function': best_loss_function})
     best_model.fit(train_pool_full, verbose=200)
