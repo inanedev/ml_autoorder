@@ -262,10 +262,10 @@ def train_catboost_per_category(df: pd.DataFrame,
     # Параметры по умолчанию для подбора
     if param_grid is None:
         param_grid = {
-            'iterations': [500, 1000, 1500],
-            'depth': [6, 8, 10],
-            'learning_rate': [0.03, 0.05, 0.1],
-            'loss_function': ['Huber:delta=1.345', 'RMSE', 'MAE']
+            'iterations': [1000, 1500],
+            'depth': [8, 10],
+            'learning_rate': [0.05, 0.1],
+            'loss_function': ['RMSE', 'MAE']
         }
     
     # Получаем уникальные категории
@@ -340,9 +340,10 @@ def train_catboost_per_category(df: pd.DataFrame,
                     'verbose': False,
                     'cat_features': cat_features_idx if cat_features_idx else None,
                     'random_seed': 42,
-                    'early_stopping_rounds': 30
+                    'early_stopping_rounds': 30,
+                    'allow_writing_files' : False
                 }
-                
+
                 model_cv = CatBoostRegressor(**params)
                 model_cv.fit(train_pool, eval_set=val_pool, verbose=False)
                 
@@ -370,7 +371,8 @@ def train_catboost_per_category(df: pd.DataFrame,
             **best_params,
             verbose=200,
             random_seed=42,
-            early_stopping_rounds=50
+            early_stopping_rounds=50,
+            allow_writing_files=False
         )
         final_model.fit(train_pool)
         
