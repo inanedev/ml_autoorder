@@ -346,10 +346,14 @@ def tune_huber_alpha(X: pd.DataFrame,
         if avg_score < best_score:
             best_score = avg_score
             best_alpha = delta
-            # Сохраняем лучшую модель, обученную на всех данных
-            train_pool_full = Pool(X, y, cat_features=categorical_features if categorical_features else None)
-            best_model = CatBoostRegressor(**{**base_params, 'loss_function': loss_function})
-            best_model.fit(train_pool_full, verbose=False)
+            best_loss_function = loss_function
+    
+    # ==================== ФИНАЛЬНОЕ ОБУЧЕНИЕ НА ВСЕЙ ВЫБОРКЕ ====================
+    # Обучаем модель один раз с лучшим найденным параметром
+    logger.info(f"\\nФинальное обучение модели с лучшим delta={best_alpha:.3f} на всей выборке...")
+    train_pool_full = Pool(X, y, cat_features=categorical_features if categorical_features else None)
+    best_model = CatBoostRegressor(**{**base_params, 'loss_function': best_loss_function})
+    best_model.fit(train_pool_full, verbose=200)
     
     # Сортируем результаты по MAE
     all_results.sort(key=lambda x: x['mae_mean'])
