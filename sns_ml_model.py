@@ -262,9 +262,9 @@ def train_catboost_per_category(df: pd.DataFrame,
     # Параметры по умолчанию для подбора
     if param_grid is None:
         param_grid = {
-            'iterations': [1000, 1500],
+            'iterations': [700, 1000, 1500],
             'depth': [8, 10],
-            'learning_rate': [0.05, 0.1],
+            'learning_rate': [0.03, 0.05 ,0.1],
             'loss_function': ['RMSE', 'MAE']
         }
     
