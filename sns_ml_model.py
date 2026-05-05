@@ -16,7 +16,7 @@ from sns_ml_fetch_data import fetch_test_data, save_predictions_to_sql
 
 # Импорты для CatBoost и машинного обучения
 from catboost import CatBoostRegressor, Pool
-from sklearn.model_selection import TimeSeriesSplit, KFold
+from sklearn.model_selection import TimeSeriesSplit, KFold, RandomizedSearchCV
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 
@@ -232,6 +232,154 @@ def train_catboost_model(X: pd.DataFrame,
     logger.info("Модель успешно обучена!")
     
     return final_model, metrics
+
+
+def tune_huber_alpha(X: pd.DataFrame, 
+                     y: pd.Series, 
+                     categorical_features: List[int],
+                     n_iter: int = 20,
+                     cv_splits: int = 3,
+                     random_seed: int = 42,
+                     base_iterations: int = 1500,
+                     base_depth: int = 8,
+                     base_learning_rate: float = 0.05) -> Tuple[float, CatBoostRegressor, dict]:
+    """
+    Подбирает оптимальный коэффициент alpha (delta) для функции потерь Huber 
+    с помощью RandomizedSearchCV.
+    
+    Args:
+        X: Датафрейм с признаками
+        y: Серия с целевой переменной
+        categorical_features: Список индексов категориальных признаков
+        n_iter: Количество итераций поиска
+        cv_splits: Количество фолдов для кросс-валидации
+        random_seed: Случайное зерно
+        base_iterations: Базовое количество итераций обучения
+        base_depth: Базовая глубина деревьев
+        base_learning_rate: Базовая скорость обучения
+        
+    Returns:
+        Кортеж (best_alpha, best_model, search_results):
+            - best_alpha: Лучшее значение delta для Huber
+            - best_model: Модель с лучшими параметрами
+            - search_results: Словарь с результатами поиска
+    """
+    logger.info("=" * 60)
+    logger.info("Подбор оптимального коэффициента alpha (delta) для Huber")
+    logger.info("Использование RandomizedSearchCV")
+    logger.info("=" * 60)
+    
+    # Создаем кастомный scorer для CatBoost с Huber
+    # Для RandomizedSearchCV нам нужно использовать sklearn wrapper
+    from scipy.stats import uniform
+    
+    # Параметр delta в CatBoost указывается как Huber:delta=value
+    # Будем подбирать delta в диапазоне от 0.5 до 3.0
+    param_distributions = {
+        'loss_function': ['Huber:delta=0.5', 'Huber:delta=0.75', 'Huber:delta=1.0', 
+                          'Huber:delta=1.25', 'Huber:delta=1.345', 'Huber:delta=1.5',
+                          'Huber:delta=1.75', 'Huber:delta=2.0', 'Huber:delta=2.5', 'Huber:delta=3.0']
+    }
+    
+    # Базовые параметры модели
+    base_params = {
+        'iterations': base_iterations,
+        'depth': base_depth,
+        'learning_rate': base_learning_rate,
+        'eval_metric': 'MAE',
+        'verbose': False,
+        'cat_features': categorical_features if categorical_features else None,
+        'random_seed': random_seed,
+        'early_stopping_rounds': 50,
+        'allow_writing_files': False
+    }
+    
+    # Используем TimeSeriesSplit для временных рядов
+    tscv = TimeSeriesSplit(n_splits=cv_splits)
+    
+    # Выполняем поиск по сетке вручную, т.к. CatBoost не полностью совместим со sklearn API
+    logger.info(f"Выполнение {n_iter} итераций RandomizedSearchCV...")
+    
+    best_score = float('inf')
+    best_alpha = None
+    best_model = None
+    all_results = []
+    
+    # Для случайного выбора параметров
+    np.random.seed(random_seed)
+    
+    for iter_idx in range(n_iter):
+        # Случайный выбор delta из диапазона [0.5, 3.0]
+        delta = np.random.uniform(0.5, 3.0)
+        loss_function = f'Huber:delta={delta:.3f}'
+        
+        logger.info(f"\nИтерация {iter_idx + 1}/{n_iter}: delta = {delta:.3f}")
+        
+        # Кросс-валидация для текущих параметров
+        cv_scores = []
+        
+        for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(X)):
+            X_fold_train = X.iloc[train_idx]
+            X_fold_val = X.iloc[val_idx]
+            y_fold_train = y.iloc[train_idx]
+            y_fold_val = y.iloc[val_idx]
+            
+            train_pool = Pool(X_fold_train, y_fold_train, cat_features=categorical_features if categorical_features else None)
+            val_pool = Pool(X_fold_val, y_fold_val, cat_features=categorical_features if categorical_features else None)
+            
+            params = {**base_params, 'loss_function': loss_function}
+            
+            model_cv = CatBoostRegressor(**params)
+            model_cv.fit(train_pool, eval_set=val_pool, verbose=False)
+            
+            y_pred_fold = model_cv.predict(val_pool)
+            mae_fold = mean_absolute_error(y_fold_val, y_pred_fold)
+            cv_scores.append(mae_fold)
+            
+            logger.debug(f"  Fold {fold_idx + 1}: MAE = {mae_fold:.4f}")
+        
+        avg_score = np.mean(cv_scores)
+        std_score = np.std(cv_scores)
+        
+        logger.info(f"  Средний MAE: {avg_score:.4f} (+/- {std_score:.4f})")
+        
+        all_results.append({
+            'delta': delta,
+            'loss_function': loss_function,
+            'mae_mean': avg_score,
+            'mae_std': std_score
+        })
+        
+        if avg_score < best_score:
+            best_score = avg_score
+            best_alpha = delta
+            # Сохраняем лучшую модель, обученную на всех данных
+            train_pool_full = Pool(X, y, cat_features=categorical_features if categorical_features else None)
+            best_model = CatBoostRegressor(**{**base_params, 'loss_function': loss_function})
+            best_model.fit(train_pool_full, verbose=False)
+    
+    # Сортируем результаты по MAE
+    all_results.sort(key=lambda x: x['mae_mean'])
+    
+    logger.info("\n" + "=" * 60)
+    logger.info("Результаты подбора гиперпараметра Huber:")
+    logger.info("Топ-5 значений delta:")
+    for i, result in enumerate(all_results[:5]):
+        logger.info(f"  {i+1}. delta={result['delta']:.3f}: MAE={result['mae_mean']:.4f} (+/- {result['mae_std']:.4f})")
+    
+    logger.info("=" * 60)
+    logger.info(f"Лучшее значение delta: {best_alpha:.3f}")
+    logger.info(f"Лучший средний MAE: {best_score:.4f}")
+    logger.info("=" * 60)
+    
+    search_results = {
+        'best_delta': best_alpha,
+        'best_mae': best_score,
+        'all_results': all_results,
+        'n_iterations': n_iter
+    }
+    
+    return best_alpha, best_model, search_results
 
 
 def train_catboost_per_category(df: pd.DataFrame,
@@ -516,22 +664,25 @@ def main():
             exclude_cols=exclude_cols
         )
         
-        # Шаг 3: Обучение базовой модели (MAE)
+        # Шаг 3: Подбор оптимального коэффициента delta для Huber через RandomizedSearchCV
         logger.info("\n" + "=" * 60)
-        logger.info("Шаг 3: Обучение базовой модели CatBoost (HUBER)")
+        logger.info("Шаг 3: Подбор оптимального коэффициента delta для Huber (RandomizedSearchCV)")
         logger.info("=" * 60)
 
-        model_base, metrics_base = train_catboost_model(
+        best_alpha, model_base, huber_search_results = tune_huber_alpha(
             X, y,
             categorical_features=categorical_features,
-            n_splits=5,
-            iterations=1500,
-            depth=8,
-            learning_rate=0.05,
+            n_iter=20,
+            cv_splits=3,
             random_seed=42,
-            loss_function='Huber:delta=1.345',
-            model_name="Базовая модель (Huber)"
+            base_iterations=1500,
+            base_depth=8,
+            base_learning_rate=0.05
         )
+
+        # Обновляем метрики базовой модели с лучшим delta
+        optimal_loss_function = f'Huber:delta={best_alpha:.3f}'
+        logger.info(f"Использование оптимальной функции потерь: {optimal_loss_function}")
 
         # Шаг 4: Обучение улучшенной модели (RMSE с другими параметрами)
         logger.info("\n" + "=" * 60)
