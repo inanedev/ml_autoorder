@@ -180,20 +180,87 @@ def train_single_model(df: pd.DataFrame,
         exclude_cols=exclude_cols
     )
     
-    # Обучаем модель с использованием RMSE как функции потерь
-    # RMSLE используется как метрика оценки в кросс-валидации
-    model, metrics = train_catboost_model(
-        X=X,
-        y=y,
-        categorical_features=categorical_features,
-        n_splits=n_splits,
+    # Создаем пул данных для CatBoost
+    pool = Pool(X, y, cat_features=categorical_features)
+    
+    # Настраиваем модель CatBoost
+    model = CatBoostRegressor(
         iterations=iterations,
         depth=depth,
         learning_rate=learning_rate,
-        random_seed=random_seed,
         loss_function='RMSE',
-        model_name="Единая модель (RMSLE)"
+        random_seed=random_seed,
+        verbose=False
     )
+    
+    # Кросс-валидация с временным разделением
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    
+    rmsle_scores = []
+    mae_scores = []
+    rmse_scores = []
+    r2_scores = []
+    
+    logger.info(f"Проведение кросс-валидации ({n_splits} фолдов)...")
+    
+    for fold, (train_idx, val_idx) in enumerate(tscv.split(X), 1):
+        X_train_fold = X.iloc[train_idx]
+        y_train_fold = y.iloc[train_idx]
+        X_val_fold = X.iloc[val_idx]
+        y_val_fold = y.iloc[val_idx]
+        
+        # Создаем пулы для фолда
+        train_pool = Pool(X_train_fold, y_train_fold, cat_features=categorical_features)
+        val_pool = Pool(X_val_fold, y_val_fold, cat_features=categorical_features)
+        
+        # Обучаем модель на фолде
+        fold_model = CatBoostRegressor(
+            iterations=iterations,
+            depth=depth,
+            learning_rate=learning_rate,
+            loss_function='RMSE',
+            random_seed=random_seed,
+            verbose=False
+        )
+        fold_model.fit(train_pool, eval_set=val_pool)
+        
+        # Делаем предсказания
+        y_pred = fold_model.predict(val_pool)
+        
+        # Вычисляем метрики
+        fold_rmsle = rmsle(y_val_fold.values, y_pred)
+        fold_mae = mean_absolute_error(y_val_fold.values, y_pred)
+        fold_rmse = np.sqrt(mean_squared_error(y_val_fold.values, y_pred))
+        fold_r2 = r2_score(y_val_fold.values, y_pred)
+        
+        rmsle_scores.append(fold_rmsle)
+        mae_scores.append(fold_mae)
+        rmse_scores.append(fold_rmse)
+        r2_scores.append(fold_r2)
+        
+        logger.info(f"Фолд {fold}: RMSLE={fold_rmsle:.4f}, MAE={fold_mae:.4f}, RMSE={fold_rmse:.4f}, R2={fold_r2:.4f}")
+    
+    # Вычисляем средние значения метрик
+    metrics = {
+        'rmsle_mean': np.mean(rmsle_scores),
+        'rmsle_std': np.std(rmsle_scores),
+        'mae_mean': np.mean(mae_scores),
+        'mae_std': np.std(mae_scores),
+        'rmse_mean': np.mean(rmse_scores),
+        'rmse_std': np.std(rmse_scores),
+        'r2_mean': np.mean(r2_scores),
+        'r2_std': np.std(r2_scores)
+    }
+    
+    logger.info("\nСредние метрики по всем фолдам:")
+    logger.info(f"  RMSLE: {metrics['rmsle_mean']:.4f} (+/- {metrics['rmsle_std']:.4f})")
+    logger.info(f"  MAE: {metrics['mae_mean']:.4f} (+/- {metrics['mae_std']:.4f})")
+    logger.info(f"  RMSE: {metrics['rmse_mean']:.4f} (+/- {metrics['rmse_std']:.4f})")
+    logger.info(f"  R2: {metrics['r2_mean']:.4f} (+/- {metrics['r2_std']:.4f})")
+    
+    # Обучаем финальную модель на всех данных
+    logger.info("\nОбучение финальной модели на всех данных...")
+    model.fit(pool)
     
     logger.info(f"Единая модель успешно обучена на {len(X)} записях")
     logger.info(f"Основная метрика (RMSLE): {metrics['rmsle_mean']:.4f} (+/- {metrics['rmsle_std']:.4f})")
