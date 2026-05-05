@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import math
 from datetime import datetime, date, timedelta
 from typing import List, Tuple, Optional, Dict
 import logging
@@ -17,6 +18,57 @@ from sns_ml_fetch_data import fetch_test_data, save_predictions_to_sql
 from catboost import CatBoostRegressor, Pool
 from sklearn.model_selection import TimeSeriesSplit, KFold, RandomizedSearchCV
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+
+class RMSLE(object):
+    """
+    Пользовательская функция потерь RMSLE для CatBoost.
+    Обучает модель напрямую минимизировать RMSLE.
+    """
+    def calc_ders_range(self, approxes, targets, weights):
+        assert len(approxes) == len(targets)
+        if weights is not None:
+            assert len(weights) == len(approxes)
+
+        result = []
+        for index in range(len(targets)):
+            val = max(approxes[index], 0)
+            der1 = math.log1p(targets[index]) - math.log1p(max(0, approxes[index]))
+            der2 = -1 / (max(0, approxes[index]) + 1)
+
+            if weights is not None:
+                der1 *= weights[index]
+                der2 *= weights[index]
+
+            result.append((der1, der2))
+        return result
+
+
+class RMSLE_val(object):
+    """
+    Пользовательская метрика RMSLE для оценки качества модели в CatBoost.
+    """
+    def get_final_error(self, error, weight):
+        return np.sqrt(error / (weight + 1e-38))
+
+    def is_max_optimal(self):
+        return False
+
+    def evaluate(self, approxes, target, weight):
+        assert len(approxes) == 1
+        assert len(target) == len(approxes[0])
+
+        approx = approxes[0]
+
+        error_sum = 0.0
+        weight_sum = 0.0
+
+        for i in range(len(approx)):
+            w = 1.0 if weight is None else weight[i]
+            weight_sum += w
+            error_sum += w * ((math.log1p(max(0, approx[i])) - math.log1p(max(0, target[i])))**2)
+
+        return error_sum, weight_sum
 
 
 def rmsle(y_true, y_pred):
@@ -183,14 +235,15 @@ def train_single_model(df: pd.DataFrame,
     # Создаем пул данных для CatBoost
     pool = Pool(X, y, cat_features=categorical_features)
     
-    # Настраиваем модель CatBoost
+    # Настраиваем модель CatBoost с пользовательской функцией потерь RMSLE
     model = CatBoostRegressor(
         iterations=iterations,
         depth=depth,
         learning_rate=learning_rate,
-        loss_function='RMSE',
+        loss_function=RMSLE(),
+        eval_metric=RMSLE_val(),
         random_seed=random_seed,
-        verbose=False
+        verbose=True
     )
     
     # Кросс-валидация с временным разделением
@@ -213,12 +266,13 @@ def train_single_model(df: pd.DataFrame,
         train_pool = Pool(X_train_fold, y_train_fold, cat_features=categorical_features)
         val_pool = Pool(X_val_fold, y_val_fold, cat_features=categorical_features)
         
-        # Обучаем модель на фолде
+        # Обучаем модель на фолде с выводом метрики RMSLE
         fold_model = CatBoostRegressor(
             iterations=iterations,
             depth=depth,
             learning_rate=learning_rate,
-            loss_function='RMSE',
+            loss_function=RMSLE(),
+            eval_metric=RMSLE_val(),
             random_seed=random_seed,
             verbose=False
         )
