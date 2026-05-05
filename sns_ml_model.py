@@ -343,7 +343,7 @@ def train_catboost_per_category(df: pd.DataFrame,
                     'early_stopping_rounds': 30,
                     'allow_writing_files' : False
                 }
-
+                print(f'{fold_idx} - номер фолда, {params} - параметры')
                 model_cv = CatBoostRegressor(**params)
                 model_cv.fit(train_pool, eval_set=val_pool, verbose=False)
                 
