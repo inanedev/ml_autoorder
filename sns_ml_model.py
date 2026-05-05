@@ -6,7 +6,6 @@ import logging
 import sys
 import os
 from dotenv import load_dotenv
-import json
 
 # Импорт функций из sns_ml_add_features
 from sns_ml_add_features import load_and_add_features
@@ -30,8 +29,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Глобальный словарь для хранения лучших гиперпараметров по категориям
-CATEGORY_BEST_PARAMS = {}
 
 def prepare_data_for_training(df: pd.DataFrame, 
                                target_col: str = 'SumRoubles',
@@ -241,7 +238,7 @@ def tune_huber_alpha(X: pd.DataFrame,
                      cv_splits: int = 3,
                      random_seed: int = 42,
                      base_iterations: int = 1500,
-                     base_depth: int = 8,
+                     base_depth: int = 10,
                      base_learning_rate: float = 0.05) -> Tuple[float, CatBoostRegressor, dict]:
     """
     Подбирает оптимальный коэффициент alpha (delta) для функции потерь Huber 
@@ -254,9 +251,9 @@ def tune_huber_alpha(X: pd.DataFrame,
         n_iter: Количество итераций поиска
         cv_splits: Количество фолдов для кросс-валидации
         random_seed: Случайное зерно
-        base_iterations: Базовое количество итераций обучения
-        base_depth: Базовая глубина деревьев
-        base_learning_rate: Базовая скорость обучения
+        base_iterations: Базовое количество итераций обучения (по умолчанию 1500)
+        base_depth: Базовая глубина деревьев (по умолчанию 10)
+        base_learning_rate: Базовая скорость обучения (по умолчанию 0.05)
         
     Returns:
         Кортеж (best_alpha, best_model, search_results):
@@ -268,10 +265,6 @@ def tune_huber_alpha(X: pd.DataFrame,
     logger.info("Подбор оптимального коэффициента alpha (delta) для Huber")
     logger.info("Использование RandomizedSearchCV")
     logger.info("=" * 60)
-    
-    # Создаем кастомный scorer для CatBoost с Huber
-    # Для RandomizedSearchCV нам нужно использовать sklearn wrapper
-    from scipy.stats import uniform
     
     # Параметр delta в CatBoost указывается как Huber:delta=value
     # Будем подбирать delta в диапазоне от 0.5 до 3.0
@@ -553,9 +546,6 @@ def train_catboost_per_category(df: pd.DataFrame,
             'R2': r2_train,
             'NumSamples': len(X_cat)
         })
-        
-        # Сохраняем лучшие параметры в глобальный словарь
-        CATEGORY_BEST_PARAMS[cat_id] = best_params
     
     # Создаем датафрейм с результатами
     results_df = pd.DataFrame(results_list)
@@ -665,92 +655,42 @@ def main():
         )
         
         # Шаг 3: Подбор оптимального коэффициента delta для Huber через RandomizedSearchCV
+        # Фиксированные гиперпараметры: Iterations=1500, Depth=10, LearningRate=0.05
         logger.info("\n" + "=" * 60)
         logger.info("Шаг 3: Подбор оптимального коэффициента delta для Huber (RandomizedSearchCV)")
+        logger.info("Фиксированные параметры: Iterations=1500, Depth=10, LearningRate=0.05")
         logger.info("=" * 60)
 
-        best_alpha, model_base, huber_search_results = tune_huber_alpha(
+        best_alpha, final_model, huber_search_results = tune_huber_alpha(
             X, y,
             categorical_features=categorical_features,
             n_iter=20,
             cv_splits=3,
             random_seed=42,
             base_iterations=1500,
-            base_depth=8,
+            base_depth=10,
             base_learning_rate=0.05
         )
 
-        # Обновляем метрики базовой модели с лучшим delta
+        # Обновляем метрики модели с лучшим delta
         optimal_loss_function = f'Huber:delta={best_alpha:.3f}'
         logger.info(f"Использование оптимальной функции потерь: {optimal_loss_function}")
 
-        # Шаг 4: Обучение улучшенной модели (RMSE с другими параметрами)
+        # Сохранение лучшей модели
         logger.info("\n" + "=" * 60)
-        logger.info("Шаг 4: Обучение улучшенной модели CatBoost (RMSE)")
+        logger.info("Шаг 4: Сохранение модели")
         logger.info("=" * 60)
 
-        model_new, metrics_new = train_catboost_model(
-            X, y,
-            categorical_features=categorical_features,
-            n_splits=5,
-            iterations=1500,
-            depth=8,
-            learning_rate=0.05,
-            random_seed=42,
-            loss_function='RMSE',
-            model_name="Улучшенная модель (RMSE)"
-        )
+        save_model(final_model, model_path)
 
-        # Шаг 5: Подбор гиперпараметров для каждой категории
+        # Шаг 5: Вывод итоговой информации по модели
         logger.info("\n" + "=" * 60)
-        logger.info("Шаг 5: Подбор гиперпараметров для каждой категории")
+        logger.info("Обучение модели завершено успешно!")
         logger.info("=" * 60)
 
-        category_models, category_metrics, category_results = train_catboost_per_category(
-            df,
-            target_col='SumRoubles',
-            category_col='CategoryID',
-            exclude_cols=['VisitDate']
-        )
-
-        # Сохранение лучших гиперпараметров по категориям в JSON файл
-        params_file = 'category_best_params.json'
-        # Преобразуем ключи numpy.int64 в стандартный int для совместимости с JSON
-        CATEGORY_BEST_PARAMS_JSON = {int(k): v for k, v in CATEGORY_BEST_PARAMS.items()}
-        with open(params_file, 'w', encoding='utf-8') as f:
-            json.dump(CATEGORY_BEST_PARAMS_JSON, f, indent=2, ensure_ascii=False)
-        logger.info(f"Лучшие гиперпараметры сохранены в файл: {params_file}")
-
-        # Вывод результатов подбора
-        logger.info("\nРезультаты подбора гиперпараметров по категориям:")
-        print(category_results.to_string(index=False))
-
-        # Шаг 6: Сохранение глобальных моделей
+        # Шаг 6: Прогнозирование на тестовых данных
         logger.info("\n" + "=" * 60)
-        logger.info("Шаг 6: Сохранение моделей")
-        logger.info("=" * 60)
-
-        base_model_path = 'catboost_model_base.cbm'
-        new_model_path = 'catboost_model_new.cbm'
-
-        save_model(model_base, base_model_path)
-        save_model(model_new, new_model_path)
-
-        # Сохранение моделей по категориям
-        category_models_dir = 'category_models'
-        os.makedirs(category_models_dir, exist_ok=True)
-        for cat_id, model in category_models.items():
-            cat_model_path = os.path.join(category_models_dir, f'catboost_model_cat_{cat_id}.cbm')
-            save_model(model, cat_model_path)
-
-        # Шаг 7: Вывод итоговой информации по моделям
-        logger.info("\n" + "=" * 60)
-        logger.info("Обучение моделей завершено успешно!")
-        logger.info("=" * 60)
-
-        # Шаг 8: Прогнозирование на тестовых данных (выполняется всегда)
-        logger.info("\n" + "=" * 60)
-        logger.info("Шаг 8: Прогнозирование на тестовых данных")
+        logger.info("Шаг 6: Прогнозирование на тестовых данных")
         logger.info("=" * 60)
 
         # Загружаем тестовые данные на текущую дату
@@ -781,78 +721,29 @@ def main():
             col_name = feature_names[idx]
             X_test[col_name] = X_test[col_name].fillna('Unknown').astype(str)
 
-        # Словарь для хранения всех моделей и их предсказаний
-        # Формат: {model_name: (model_object, predictions_array)}
-        models_dict = {
-            'base': (model_base, model_base.predict(X_test)),
-            'new': (model_new, model_new.predict(X_test))
-        }
+        # Делаем предсказание единственной моделью
+        predictions = final_model.predict(X_test)
 
-        # Логирование предсказаний
-        for model_name, (model_obj, predictions) in models_dict.items():
-            logger.info(f"Модель '{model_name}': выполнено {len(predictions)} предсказаний")
-            logger.info(f"  Среднее: {np.mean(predictions):.4f}, Std: {np.std(predictions):.4f}")
+        logger.info(f"Модель: выполнено {len(predictions)} предсказаний")
+        logger.info(f"  Среднее: {np.mean(predictions):.4f}, Std: {np.std(predictions):.4f}")
 
-        # Шаг 9: Предсказание advanced с использованием моделей по категориям
+        # Расчет вероятности/уверенности прогноза
+        mean_pred = np.mean(predictions)
+        std_pred = np.std(predictions)
+        confidence = np.exp(-np.abs(predictions - mean_pred) / (std_pred + 1e-6))
+
+        # Сохранение результатов в таблицу базы данных
         logger.info("\n" + "=" * 60)
-        logger.info("Шаг 9: Предсказание advanced (модели по категориям)")
-        logger.info("=" * 60)
-
-        predictions_advanced = np.zeros(len(test_df))
-        logger.info(f"Выполнение предсказаний для {len(test_df)} записей...")
-
-        # Для каждой категории используем свою модель
-        for cat_id, cat_model in category_models.items():
-            # Фильтруем записи для данной категории
-            cat_mask = test_df['CategoryID'] == cat_id
-            cat_count = cat_mask.sum()
-            
-            if cat_count > 0:
-                logger.info(f"Категория {cat_id}: {cat_count} записей")
-                
-                # Получаем признаки для этой категории
-                X_test_cat = X_test[cat_mask]
-                
-                # Делаем предсказание
-                pred_cat = cat_model.predict(X_test_cat)
-                predictions_advanced[cat_mask] = pred_cat
-                
-                logger.info(f"  Среднее предсказание: {np.mean(pred_cat):.4f}, Std: {np.std(pred_cat):.4f}")
-        
-        # Проверяем, остались ли записи без предсказания (категории, для которых не было модели)
-        uncovered_mask = ~test_df['CategoryID'].isin(category_models.keys())
-        uncovered_count = uncovered_mask.sum()
-        if uncovered_count > 0:
-            logger.warning(f"{uncovered_count} записей имеют категории, для которых нет обученной модели.")
-            logger.warning("Используем базовую модель для этих записей...")
-            # Используем базовую модель для категорий без своей модели
-            predictions_advanced[uncovered_mask] = model_base.predict(X_test[uncovered_mask])
-
-        # Добавляем advanced предсказания в словарь
-        models_dict['advanced'] = (None, predictions_advanced)
-        logger.info(f"Advanced модель: выполнено {len(predictions_advanced)} предсказаний")
-        logger.info(f"  Среднее: {np.mean(predictions_advanced):.4f}, Std: {np.std(predictions_advanced):.4f}")
-
-        # Расчет вероятности/уверенности прогноза (на основе улучшенной модели)
-        predictions_new = models_dict['new'][1]
-        mean_pred_new = np.mean(predictions_new)
-        std_pred_new = np.std(predictions_new)
-        confidence_new = np.exp(-np.abs(predictions_new - mean_pred_new) / (std_pred_new + 1e-6))
-
-        # Сохранение результатов от всех моделей в одну таблицу базы данных
-        logger.info("\n" + "=" * 60)
-        logger.info("Шаг 10: Сохранение результатов от всех моделей в SNS_ML_Predictions")
+        logger.info("Шаг 7: Сохранение результатов в SNS_ML_Predictions")
         logger.info("=" * 60)
 
         # Создаем результирующий датафрейм для сохранения
         # Сначала копируем все фичи из тестовых данных
         result_df = test_df.copy()
 
-        # Добавляем предсказания от каждой модели в порядке добавления в словарь
-        for model_name, (model_obj, predictions) in models_dict.items():
-            col_name = f'predict_{model_name}'
-            result_df[col_name] = predictions
-            logger.info(f"Добавлены предсказания модели '{model_name}' в колонку {col_name}")
+        # Добавляем предсказания модели
+        result_df['predict'] = predictions
+        logger.info("Добавлены предсказания модели в колонку predict")
 
         # Добавляем служебные колонки
         result_df['CreatedAt'] = datetime.now()
@@ -863,8 +754,6 @@ def main():
         logger.info("\n" + "=" * 60)
         logger.info("Прогнозирование и сохранение результатов завершены успешно!")
         logger.info(f"Результаты сохранены в таблицу: SNS_ML_Predictions")
-        logger.info(f"Количество колонок с предсказаниями: {len(models_dict)}")
-        logger.info(f"Имена колонок предсказаний: {[f'predict_{name}' for name in models_dict.keys()]}")
         logger.info("=" * 60)
 
         
