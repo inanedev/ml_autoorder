@@ -27,4 +27,13 @@ node_modules/
 dist/
 build/
 target/
+
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
 ```
