@@ -564,8 +564,10 @@ def main():
 
         # Сохранение лучших гиперпараметров по категориям в JSON файл
         params_file = 'category_best_params.json'
+        # Преобразуем ключи numpy.int64 в стандартный int для совместимости с JSON
+        CATEGORY_BEST_PARAMS_JSON = {int(k): v for k, v in CATEGORY_BEST_PARAMS.items()}
         with open(params_file, 'w', encoding='utf-8') as f:
-            json.dump(CATEGORY_BEST_PARAMS, f, indent=2, ensure_ascii=False)
+            json.dump(CATEGORY_BEST_PARAMS_JSON, f, indent=2, ensure_ascii=False)
         logger.info(f"Лучшие гиперпараметры сохранены в файл: {params_file}")
 
         # Вывод результатов подбора
