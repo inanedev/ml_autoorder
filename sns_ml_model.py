@@ -16,7 +16,7 @@ from sns_ml_fetch_data import fetch_test_data, save_predictions_to_sql
 
 # Импорты для CatBoost и машинного обучения
 from catboost import CatBoostRegressor, Pool
-from sklearn.model_selection import TimeSeriesSplit, KFold, RandomizedSearchCV
+from sklearn.model_selection import TimeSeriesSplit, KFold, RandomizedSearchCV, GridSearchCV
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 
@@ -326,7 +326,228 @@ def train_single_model(df: pd.DataFrame,
 
 
 
-def save_model(model: CatBoostRegressor, model_path: str = 'catboost_model.cbm') -> None:
+def train_models_per_category(df: pd.DataFrame, 
+                               target_col: str = 'SumRoubles',
+                               exclude_cols: Optional[List[str]] = None,
+                               params: Optional[Dict] = None,
+                               n_splits: int = 3,
+                               random_seed: int = 42) -> Tuple[Dict, Dict, List[str]]:
+    """
+    Обучает отдельные модели CatBoost для каждой категории с подбором гиперпараметров.
+    Использует RMSLE как метрику для выбора лучших параметров.
+    
+    Args:
+        df: Исходный датафрейм с признаками
+        target_col: Название целевой колонки (по умолчанию 'SumRoubles')
+        exclude_cols: Список колонок для исключения из признаков
+        params: Словарь с параметрами для Grid Search
+        n_splits: Количество фолдов для кросс-валидации
+        random_seed: Случайное зерно
+        
+    Returns:
+        Кортеж (models_dict, best_params_dict, feature_names):
+            - models_dict: Словарь {category: {'model': model, 'metrics': metrics}}
+            - best_params_dict: Словарь {category: best_params}
+            - feature_names: Список имен признаков
+    """
+    logger.info("=" * 60)
+    logger.info("Обучение отдельных моделей для каждой категории с подбором гиперпараметров")
+    logger.info("Используется метрика: RMSLE")
+    logger.info("=" * 60)
+    
+    if exclude_cols is None:
+        exclude_cols = []
+    
+    # Параметры для подбора по умолчанию
+    if params is None:
+        params = {
+            'l2_leaf_reg': [1, 4, 8],
+            'learning_rate': [0.03, 0.1, 0.5],
+            'depth': [6, 8, 10]
+        }
+    
+    # Создаем копию датафрейма
+    df_clean = df.copy()
+    
+    # Удаляем строки с NaN в целевой переменной
+    df_clean = df_clean.dropna(subset=[target_col])
+    
+    # Определяем признаки
+    cols_to_exclude = [target_col] + exclude_cols
+    feature_cols = [col for col in df_clean.columns if col not in cols_to_exclude]
+    
+    # Категориальные признаки
+    categorical_feature_names = [
+        'PointID', 'DayOfWeek', 'Quarter', 'Month', 'WeekOfYear',
+        'IsFriday', 'IsMonday', 'IsPreHoliday', 'IsPostHoliday', 'isEndOfMonth',
+        'BranchID', 'PointClass', 'PointType', 'MicroRegionID', 'LastSalesCategory'
+    ]
+    
+    # Находим индексы категориальных признаков
+    categorical_features = []
+    for idx, col in enumerate(feature_cols):
+        if col in categorical_feature_names:
+            categorical_features.append(idx)
+    
+    # Заполняем NaN в категориальных признаках
+    for col in categorical_feature_names:
+        if col in df_clean.columns:
+            df_clean[col] = df_clean[col].fillna('Unknown').astype(str)
+    
+    # Получаем список категорий
+    categories = df_clean['CategoryID'].unique()
+    logger.info(f"Найдено {len(categories)} уникальных категорий")
+    
+    models_dict = {}
+    best_params_dict = {}
+    
+    # Обучаем модель для каждой категории
+    for i, category in enumerate(categories, 1):
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Категория {i}/{len(categories)}: {category}")
+        logger.info(f"{'='*60}")
+        
+        # Фильтруем данные по категории
+        df_cat = df_clean[df_clean['CategoryID'] == category].copy()
+        
+        if len(df_cat) < 100:
+            logger.warning(f"Недостаточно данных для категории {category} ({len(df_cat)} записей). Пропускаем.")
+            continue
+        
+        X_cat = df_cat[feature_cols].copy()
+        y_cat = df_cat[target_col].copy()
+        
+        # Преобразуем категориальные признаки в строковый тип
+        for idx in categorical_features:
+            col_name = feature_cols[idx]
+            X_cat[col_name] = X_cat[col_name].fillna('Unknown').astype(str)
+        
+        # Создаем пул данных
+        pool_cat = Pool(X_cat, y_cat, cat_features=categorical_features)
+        
+        # Базовая модель CatBoost с RMSLE
+        base_model = CatBoostRegressor(
+            iterations=1500,
+            loss_function=RMSLE(),
+            eval_metric=RMSLE_val(),
+            random_seed=random_seed,
+            verbose=False
+        )
+        
+        # Grid Search с кросс-валидацией
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+        
+        logger.info("Проведение Grid Search для подбора гиперпараметров...")
+        
+        best_score = float('inf')
+        best_params = {}
+        best_fold_model = None
+        
+        # Перебор всех комбинаций параметров
+        from itertools import product
+        param_keys = list(params.keys())
+        param_values = list(params.values())
+        
+        total_combinations = len(param_values[0])
+        for key in param_keys[1:]:
+            total_combinations *= len(param_values[param_keys.index(key)])
+        
+        logger.info(f"Всего комбинаций параметров: {total_combinations}")
+        
+        combination_count = 0
+        for param_combo in product(*param_values):
+            combination_count += 1
+            current_params = dict(zip(param_keys, param_combo))
+            
+            # Кросс-валидация для данной комбинации параметров
+            fold_scores = []
+            
+            for fold, (train_idx, val_idx) in enumerate(tscv.split(X_cat), 1):
+                X_train_fold = X_cat.iloc[train_idx]
+                y_train_fold = y_cat.iloc[train_idx]
+                X_val_fold = X_cat.iloc[val_idx]
+                y_val_fold = y_cat.iloc[val_idx]
+                
+                # Создаем модель с текущими параметрами
+                fold_model = CatBoostRegressor(
+                    iterations=1500,
+                    l2_leaf_reg=current_params['l2_leaf_reg'],
+                    learning_rate=current_params['learning_rate'],
+                    depth=current_params['depth'],
+                    loss_function=RMSLE(),
+                    eval_metric=RMSLE_val(),
+                    random_seed=random_seed,
+                    verbose=False
+                )
+                
+                train_pool = Pool(X_train_fold, y_train_fold, cat_features=categorical_features)
+                val_pool = Pool(X_val_fold, y_val_fold, cat_features=categorical_features)
+                
+                fold_model.fit(train_pool, eval_set=val_pool)
+                
+                # Предсказания и расчет RMSLE
+                y_pred = fold_model.predict(val_pool)
+                fold_rmsle = rmsle(y_val_fold.values, y_pred)
+                fold_scores.append(fold_rmsle)
+            
+            mean_score = np.mean(fold_scores)
+            
+            if mean_score < best_score:
+                best_score = mean_score
+                best_params = current_params.copy()
+                
+                # Обучаем лучшую модель на всех данных категории
+                best_fold_model = CatBoostRegressor(
+                    iterations=1500,
+                    l2_leaf_reg=best_params['l2_leaf_reg'],
+                    learning_rate=best_params['learning_rate'],
+                    depth=best_params['depth'],
+                    loss_function=RMSLE(),
+                    eval_metric=RMSLE_val(),
+                    random_seed=random_seed,
+                    verbose=False
+                )
+            
+            if combination_count % 5 == 0 or combination_count == total_combinations:
+                logger.info(f"  Комбинация {combination_count}/{total_combinations}: "
+                          f"params={current_params}, CV RMSLE={mean_score:.4f}"
+                          f"{' *лучший*' if mean_score == best_score else ''}")
+        
+        logger.info(f"\nЛучшие параметры для категории {category}: {best_params}")
+        logger.info(f"Лучший RMSLE (CV): {best_score:.4f}")
+        
+        # Обучаем финальную модель на всех данных категории с лучшими параметрами
+        logger.info("Обучение финальной модели на всех данных категории...")
+        final_model = CatBoostRegressor(
+            iterations=1500,
+            l2_leaf_reg=best_params['l2_leaf_reg'],
+            learning_rate=best_params['learning_rate'],
+            depth=best_params['depth'],
+            loss_function=RMSLE(),
+            eval_metric=RMSLE_val(),
+            random_seed=random_seed,
+            verbose=False
+        )
+        final_model.fit(pool_cat)
+        
+        # Сохраняем модель и информацию о ней
+        models_dict[category] = {
+            'model': final_model,
+            'metrics': {'rmsle_cv': best_score},
+            'best_params': best_params
+        }
+        best_params_dict[category] = best_params
+        
+        logger.info(f"Модель для категории {category} успешно обучена")
+    
+    logger.info("\n" + "=" * 60)
+    logger.info(f"Обучено моделей: {len(models_dict)}")
+    logger.info("=" * 60)
+    
+    return models_dict, best_params_dict, feature_cols
+
+
+def save_single_model(model: CatBoostRegressor, model_path: str = 'catboost_model.cbm') -> None:
     """
     Сохраняет обученную модель CatBoost в файл.
     
@@ -403,12 +624,15 @@ def load_models_per_category(categories: List, base_path: str = 'catboost_model_
 
 def main():
     """
-    Основная функция для обучения единой модели CatBoost для всех категорий
-    с использованием метрики RMSLE и прогнозирования на тестовых данных.
+    Основная функция для обучения моделей CatBoost:
+    1. Единая модель для всех категорий (метрика: RMSLE)
+    2. Отдельные модели для каждой категории с подбором гиперпараметров (метрика: RMSLE)
+    Прогнозирование на тестовых данных с использованием моделей по категориям.
     """
     logger.info("=" * 60)
-    logger.info("Запуск обучения единой модели CatBoost для прогнозирования SumRoubles")
-    logger.info("Используется единая модель для всех категорий (метрика: RMSLE)")
+    logger.info("Запуск обучения моделей CatBoost для прогнозирования SumRoubles")
+    logger.info("1. Единая модель для всех категорий")
+    logger.info("2. Отдельные модели для каждой категории с подбором гиперпараметров")
     logger.info("=" * 60)
     
     # Установка дат: end_date = текущая дата, start_date = end_date - 1 год
@@ -434,7 +658,7 @@ def main():
     model_path = sys.argv[3] if len(sys.argv) > 3 else 'catboost_model_single.cbm'
     
     logger.info(f"Период обучения: {start_date} - {end_date}")
-    logger.info(f"Путь сохранения модели: {model_path}")
+    logger.info(f"Путь сохранения единой модели: {model_path}")
     
     try:
         # Шаг 1: Загрузка данных с признаками
@@ -447,13 +671,6 @@ def main():
         logger.info(f"Загружено {len(df)} записей")
         logger.info(f"Колонки в датасете: {list(df.columns)}")
         
-        # Шаг 2: Обучение единой модели для всех категорий
-        logger.info("\n" + "=" * 60)
-        logger.info("Шаг 2: Обучение единой модели для всех категорий (RMSLE)")
-        logger.info("=" * 60)
-        
-        exclude_cols = ['VisitDate']
-        
         # Проверяем наличие категориальных колонок с NaN и заполняем их
         categorical_cols_to_check = ['PointID', 'CategoryID', 'BranchID', 'PointClass', 'PointType', 'MicroRegionID']
         for col in categorical_cols_to_check:
@@ -463,6 +680,13 @@ def main():
                     logger.info(f"Заполнено {nan_count} NaN в колонке {col} значением 'Unknown'")
                     df[col] = df[col].fillna('Unknown')
         
+        exclude_cols = ['VisitDate']
+        
+        # Шаг 2: Обучение единой модели для всех категорий
+        logger.info("\n" + "=" * 60)
+        logger.info("Шаг 2: Обучение единой модели для всех категорий (RMSLE)")
+        logger.info("=" * 60)
+        
         # Обучаем единую модель для всех категорий
         model, metrics, categorical_features, feature_names = train_single_model(
             df,
@@ -470,7 +694,7 @@ def main():
             exclude_cols=exclude_cols
         )
         
-        # Шаг 3: Сохранение модели
+        # Шаг 3: Сохранение единой модели
         logger.info("\n" + "=" * 60)
         logger.info("Шаг 3: Сохранение единой модели")
         logger.info("=" * 60)
@@ -478,15 +702,43 @@ def main():
         model.save_model(model_path)
         logger.info(f"Модель сохранена в файл: {model_path}")
         
-        # Шаг 4: Вывод итоговой информации
         logger.info("\n" + "=" * 60)
-        logger.info("Обучение модели завершено успешно!")
+        logger.info("Обучение единой модели завершено успешно!")
         logger.info(f"Основная метрика RMSLE: {metrics['rmsle_mean']:.4f} (+/- {metrics['rmsle_std']:.4f})")
         logger.info("=" * 60)
         
+        # Шаг 4: Обучение отдельных моделей для каждой категории
+        logger.info("\n" + "=" * 60)
+        logger.info("Шаг 4: Обучение отдельных моделей для каждой категории")
+        logger.info("=" * 60)
+        
+        params = {
+            'l2_leaf_reg': [1, 4, 8],
+            'learning_rate': [0.03, 0.1, 0.5],
+            'depth': [6, 8, 10]
+        }
+        
+        models_per_category, best_params_dict, feature_names_cat = train_models_per_category(
+            df,
+            target_col='SumRoubles',
+            exclude_cols=exclude_cols,
+            params=params,
+            n_splits=3
+        )
+        
+        logger.info("\n" + "=" * 60)
+        logger.info("Обучение моделей по категориям завершено успешно!")
+        logger.info(f"Обучено моделей: {len(models_per_category)}")
+        logger.info("=" * 60)
+        
+        # Вывод лучших параметров для каждой категории
+        logger.info("\nЛучшие параметры для категорий:")
+        for category, params_best in best_params_dict.items():
+            logger.info(f"  Категория {category}: {params_best}")
+        
         # Шаг 5: Прогнозирование на тестовых данных
         logger.info("\n" + "=" * 60)
-        logger.info("Шаг 4: Прогнозирование на тестовых данных")
+        logger.info("Шаг 5: Прогнозирование на тестовых данных")
         logger.info("=" * 60)
         
         test_date = today
@@ -510,8 +762,27 @@ def main():
             col_name = feature_names[idx]
             X_test[col_name] = X_test[col_name].fillna('Unknown').astype(str)
         
-        # Делаем предсказание
-        predictions = model.predict(X_test)
+        # Делаем предсказания используя модели по категориям
+        predictions = np.zeros(len(X_test))
+        
+        logger.info("Выполнение прогнозирования с использованием моделей по категориям...")
+        
+        # Для каждой категории используем свою модель
+        for category in models_per_category.keys():
+            mask = test_df['CategoryID'] == category
+            if mask.sum() > 0:
+                X_cat = X_test[mask]
+                model_cat = models_per_category[category]['model']
+                predictions[mask] = model_cat.predict(X_cat)
+                logger.info(f"  Категория {category}: {mask.sum()} предсказаний")
+        
+        # Для категорий, для которых нет отдельной модели, используем единую модель
+        all_categories_with_models = set(models_per_category.keys())
+        mask_no_model = ~test_df['CategoryID'].isin(all_categories_with_models)
+        if mask_no_model.sum() > 0:
+            X_no_model = X_test[mask_no_model]
+            predictions[mask_no_model] = model.predict(X_no_model)
+            logger.info(f"  Категории без отдельной модели: {mask_no_model.sum()} предсказаний (использована единая модель)")
         
         # Расчет уверенности прогноза
         mean_pred = np.mean(predictions)
@@ -520,17 +791,17 @@ def main():
         
         # Создаем датафрейм с предсказаниями
         result_df = test_df.copy()
-        result_df['predict'] = predictions
+        result_df['predict_new'] = predictions
         result_df['confidence'] = confidence
         
         # Логгируем статистику
         logger.info(f"Выполнено {len(predictions)} предсказаний")
-        logger.info(f"  Среднее: {result_df['predict'].mean():.4f}")
-        logger.info(f"  Std: {result_df['predict'].std():.4f}")
+        logger.info(f"  Среднее: {result_df['predict_new'].mean():.4f}")
+        logger.info(f"  Std: {result_df['predict_new'].std():.4f}")
         
         # Шаг 6: Сохранение результатов в базу данных
         logger.info("\n" + "=" * 60)
-        logger.info("Шаг 5: Сохранение результатов в SNS_ML_Predictions")
+        logger.info("Шаг 6: Сохранение результатов в SNS_ML_Predictions")
         logger.info("=" * 60)
         
         # Добавляем служебные колонки
@@ -542,6 +813,7 @@ def main():
         logger.info("\n" + "=" * 60)
         logger.info("Прогнозирование и сохранение результатов завершены успешно!")
         logger.info(f"Результаты сохранены в таблицу: SNS_ML_Predictions")
+        logger.info(f"Поле predict_new содержит предсказания от моделей по категориям")
         logger.info("=" * 60)
 
         
