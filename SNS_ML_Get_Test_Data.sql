@@ -69,7 +69,9 @@ GO
  * 
  * Логика работы:
  *   1. Выбираются все активные точки продаж
- *   2. Отбираются только категории, которые продавались хоть одному клиенту за последний месяц (до @TargetDate)
+ *   2. Отбираются категории для прогноза:
+ *      - Для существующих клиентов: категории, которые они продавали за последние 3 месяца до @TargetDate
+ *      - Для новых клиентов (без продаж за 3 месяца): все категории, которые продавались хоть одному клиенту за последний месяц
  *   3. Для каждой точки формируются признаки из SNS_ML_Get_Raw_Data для отобранных категорий
  *   4. Добавляются календарные фичи для TargetDate (аналогично add_calendar_features)
  *   5. Рассчитываются фичи истории посещений (аналогично add_visit_features)
@@ -81,7 +83,7 @@ GO
  * Примечания:
  *   - Размер сетки микрорегиона: 0.027 градуса (~3 км)
  *   - Фильтруются только активные товары и точки
- *   - Категории ограничены теми, которые продавались за последний месяц (до @TargetDate)
+ *   - Категории ограничены: для существующих клиентов - их продажи за 3 месяца, для новых - общие продажи за последний месяц
  *   - Координаты преобразуются из строкового формата с заменой запятой на точку
  *   - Все лаговые фичи считаются строго по данным до @TargetDate (не включая саму дату)
  *   - DaysNextVisit рассчитывается по истории визитов; если следующего визита нет, используется атрибут 644
@@ -152,9 +154,9 @@ BEGIN
 
         CREATE CLUSTERED INDEX IX_PF_PointID ON #PointFeatures (PointID);
 
-        -- 3. Список категорий, которые продавались хоть одному клиенту за последний месяц
-        IF OBJECT_ID('tempdb..#Categories') IS NOT NULL DROP TABLE #Categories;
-        SELECT DISTINCT m.CategoryID INTO #Categories 
+        -- 3. Список всех категорий, которые продавались хоть одному клиенту за последний месяц (для новых клиентов)
+        IF OBJECT_ID('tempdb..#AllCategories') IS NOT NULL DROP TABLE #AllCategories;
+        SELECT DISTINCT m.CategoryID INTO #AllCategories 
         FROM DS_Orders o 
         INNER JOIN DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
         INNER JOIN #ItemMap m ON CAST(oi.iID AS INT) = m.iid 
@@ -162,14 +164,31 @@ BEGIN
           AND o.orDate >= DATEADD(MONTH, -1, @TargetDate)
           AND o.orDate < @TargetDate;
         
-        CREATE CLUSTERED INDEX IX_Cat_CategoryID ON #Categories (CategoryID);
+        CREATE CLUSTERED INDEX IX_AllCat_CategoryID ON #AllCategories (CategoryID);
 
-        -- 4. Полный грид: все активные точки x все категории для одной даты
+        -- 3a. Категории для каждого клиента: которые он продавал за последние 3 месяца
+        IF OBJECT_ID('tempdb..#ClientCategories') IS NOT NULL DROP TABLE #ClientCategories;
+        SELECT DISTINCT o.mfID AS PointID, m.CategoryID INTO #ClientCategories
+        FROM DS_Orders o 
+        INNER JOIN DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
+        INNER JOIN #ItemMap m ON CAST(oi.iID AS INT) = m.iid 
+        WHERE o.orType = 1 
+          AND o.orDate >= DATEADD(MONTH, -3, @TargetDate)
+          AND o.orDate < @TargetDate;
+        
+        CREATE CLUSTERED INDEX IX_ClientCat_PointCat ON #ClientCategories (PointID, CategoryID);
+        CREATE NONCLUSTERED INDEX IX_ClientCat_Point ON #ClientCategories (PointID);
+
+        -- 4. Полный грид: точки x категории
+        -- Для клиентов с историей продаж (за 3 месяца) - только их категории
+        -- Для новых клиентов - все категории, которые продавались за последний месяц
         IF OBJECT_ID('tempdb..#FullGrid') IS NOT NULL DROP TABLE #FullGrid;
+        
+        -- Сначала создаем грид для клиентов с историей продаж
         SELECT 
             CAST(@TargetDate AS DATE) AS VisitDate,
-            pf.PointID,
-            c.CategoryID,
+            cc.PointID,
+            cc.CategoryID,
             pf.BranchID,
             pf.PointClass,
             pf.PointType,
@@ -178,8 +197,26 @@ BEGIN
             pf.MicroRegionID,
             pf.VisitDays
         INTO #FullGrid
+        FROM #ClientCategories cc
+        INNER JOIN #PointFeatures pf ON cc.PointID = pf.PointID
+        
+        UNION ALL
+        
+        -- Добавляем грид для новых клиентов (у которых нет продаж за 3 месяца)
+        SELECT 
+            CAST(@TargetDate AS DATE) AS VisitDate,
+            pf.PointID,
+            ac.CategoryID,
+            pf.BranchID,
+            pf.PointClass,
+            pf.PointType,
+            pf.Lat,
+            pf.Lon,
+            pf.MicroRegionID,
+            pf.VisitDays
         FROM #PointFeatures pf
-        CROSS JOIN #Categories c;
+        CROSS JOIN #AllCategories ac
+        WHERE pf.PointID NOT IN (SELECT DISTINCT PointID FROM #ClientCategories);
         
         CREATE CLUSTERED INDEX IX_FG_DatePointCat ON #FullGrid (VisitDate, PointID, CategoryID);
 
