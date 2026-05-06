@@ -86,6 +86,10 @@ def rmsle(y_true, y_pred):
     y_true = np.maximum(y_true, 0)
     y_pred = np.maximum(y_pred, 0)
     
+    # Конвертируем в float для поддержки np.log1p (на случай decimal.Decimal)
+    y_true = y_true.astype(float)
+    y_pred = y_pred.astype(float)
+    
     return np.sqrt(mean_squared_error(np.log1p(y_true), np.log1p(y_pred)))
 
 
