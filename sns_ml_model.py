@@ -461,7 +461,7 @@ def run_full_pipeline(models_save_dir: str = 'category_models'):
     
     # Шаг 8: Сохраняем результаты в таблицу SNS_ML_Predictions
     logger.info("Шаг 8: Сохранение предсказаний в таблицу SNS_ML_Predictions...")
-    save_predictions_to_sql(result_df, table_name='SNS_ML_Predictions')
+    save_predictions_to_sql(result_df, table_name='SNS_ML_Predictions', target_date=today)
     
     logger.info("=" * 60)
     logger.info("ML пайплайн успешно завершён!")
