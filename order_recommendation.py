@@ -324,6 +324,12 @@ class OrderRecommender:
             assign_category_class
         )
         
+        # Нормализуем имена колонок в результатах
+        if not point_totals.empty:
+            point_totals.columns = [col.lower() for col in point_totals.columns]
+        if not point_category_class.empty:
+            point_category_class.columns = [col.lower() for col in point_category_class.columns]
+        
         return point_totals, point_category_class
 
     def _prepare_sales_history(self, df: pd.DataFrame) -> pd.DataFrame:
