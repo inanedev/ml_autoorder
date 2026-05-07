@@ -92,7 +92,16 @@ def load_predictions_from_db(
     try:
         conn = get_connection()
         
-        query = "SELECT * FROM dbo.SNS_ML_Predictions WHERE 1=1"
+        query = """
+            SELECT 
+                PointID,
+                CategoryID,
+                Predicted_Category_Sum,
+                Days_Until_Next_Visit,
+                VisitDate
+            FROM dbo.SNS_ML_Predictions 
+            WHERE 1=1
+        """
         params = []
         
         if point_id is not None:

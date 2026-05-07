@@ -404,6 +404,21 @@ class OrderRecommender:
         pred_df = predictions_df.copy()
         pred_df.columns = [col.lower() for col in pred_df.columns]
         
+        # Явно переименовываем возможные вариации имен колонок
+        rename_map = {}
+        for col in pred_df.columns:
+            if col in ['pointid', 'point_id', 'point', 'mfid']:
+                rename_map[col] = 'pointid'
+            elif col in ['categoryid', 'category_id', 'category']:
+                rename_map[col] = 'categoryid'
+            elif col in ['predicted_category_sum', 'sumroubles', 'forecast_amount', 'forecast']:
+                pass  # Эти колонки обрабатываются ниже
+            elif col in ['days_until_next_visit', 'days_until_visit', 'days_until']:
+                rename_map[col] = 'days_until_next_visit'
+        
+        if rename_map:
+            pred_df = pred_df.rename(columns=rename_map)
+        
         # Находим колонку с суммой прогноза
         value_col = None
         for col in ['predicted_category_sum', 'sumroubles', 'forecast_amount', 'forecast']:
