@@ -467,14 +467,25 @@ class OrderRecommender:
                 as_index=False
             )['brand_amount'].mean().rename(columns={'brand_amount': 'avg_sales'})
             
+            # КРИТИЧЕСКИ ВАЖНО: заполняем NaN значения нулями
+            sales_agg['avg_sales'] = sales_agg['avg_sales'].fillna(0.0).astype(float)
+            
+            logger.info(f"sales_agg: {len(sales_agg)} записей, avg_sales min={sales_agg['avg_sales'].min():.2f}, max={sales_agg['avg_sales'].max():.2f}")
+            
             # Также считаем средние продажи по всем дням недели (для fallback)
             sales_agg_all_days = sales_history.groupby(
                 ['pointid', 'categoryid', 'brand'], 
                 as_index=False
             )['brand_amount'].mean().rename(columns={'brand_amount': 'avg_sales_all_days'})
+            
+            # КРИТИЧЕСКИ ВАЖНО: заполняем NaN значения нулями
+            sales_agg_all_days['avg_sales_all_days'] = sales_agg_all_days['avg_sales_all_days'].fillna(0.0).astype(float)
+            
+            logger.info(f"sales_agg_all_days: {len(sales_agg_all_days)} записей, avg_sales_all_days min={sales_agg_all_days['avg_sales_all_days'].min():.2f}, max={sales_agg_all_days['avg_sales_all_days'].max():.2f}")
         else:
             sales_agg = pd.DataFrame()
             sales_agg_all_days = pd.DataFrame()
+            logger.warning("sales_history пустой или не содержит колонки 'brand'")
         
         # Предварительно определяем топовые бренды по микрорегионам
         if not sales_history.empty and 'microregionid' in sales_history.columns:
@@ -540,21 +551,52 @@ class OrderRecommender:
                         (sales_agg['pointid'] == point_id) & 
                         (sales_agg['categoryid'] == category_id) &
                         (sales_agg['dayofweek'] == target_dow)
-                    ]
+                    ].copy()
                     
-                    # Если нет продаж для конкретного дня недели, используем средние по всем дням
-                    if point_sales.empty and not sales_agg_all_days.empty:
+                    # Получаем список всех брендов категории из правил
+                    all_brands_in_category = set(cat_rules['brand'].unique())
+                    
+                    # Проверяем, все ли бренды из правил присутствуют в point_sales
+                    brands_in_sales = set(point_sales['brand'].unique()) if not point_sales.empty else set()
+                    missing_brands = all_brands_in_category - brands_in_sales
+                    
+                    # Если есть отсутствующие бренды или point_sales пустой, используем fallback
+                    if missing_brands or point_sales.empty:
+                        logger.debug(f"Точка {point_id}, категория {category_id}: найдено {len(brands_in_sales)} брендов в sales_agg для dow={target_dow}, "
+                                   f"отсутствует {len(missing_brands)} брендов. Используем fallback на средние по всем дням.")
+                        
+                        if not sales_agg_all_days.empty:
+                            fallback_sales = sales_agg_all_days[
+                                (sales_agg_all_days['pointid'] == point_id) & 
+                                (sales_agg_all_days['categoryid'] == category_id)
+                            ].copy()
+                            
+                            if not fallback_sales.empty:
+                                # Переименовываем колонку для совместимости
+                                fallback_sales = fallback_sales.rename(columns={'avg_sales_all_days': 'avg_sales'})
+                                
+                                # Объединяем с имеющимися данными (приоритет у данных для целевого дня)
+                                if not point_sales.empty:
+                                    # Конкатенируем и удаляем дубликаты (приоритет у первого вхождения)
+                                    point_sales = pd.concat([point_sales, fallback_sales], ignore_index=True)
+                                    point_sales = point_sales.drop_duplicates(subset=['brand'], keep='first')
+                                else:
+                                    point_sales = fallback_sales
+                else:
+                    # sales_agg пустой - пробуем использовать fallback сразу
+                    if not sales_agg_all_days.empty:
                         point_sales = sales_agg_all_days[
                             (sales_agg_all_days['pointid'] == point_id) & 
                             (sales_agg_all_days['categoryid'] == category_id)
                         ].copy()
                         if not point_sales.empty:
-                            # Переименовываем колонку для совместимости
                             point_sales = point_sales.rename(columns={'avg_sales_all_days': 'avg_sales'})
                 
                 # Если point_sales всё ещё пустой или не содержит нужных колонок, создаем заглушку
                 if point_sales.empty or 'avg_sales' not in point_sales.columns:
                     point_sales = pd.DataFrame(columns=['brand', 'avg_sales'])
+                
+                logger.debug(f"Точка {point_id}, категория {category_id}: итого {len(point_sales)} брендов в point_sales")
                 
                 # Получаем MicroRegionID для точки (если есть в истории)
                 microregion_id = None
