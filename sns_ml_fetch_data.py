@@ -439,7 +439,7 @@ def save_predictions_to_sql(df: pd.DataFrame, table_name: str = 'SNS_ML_Predicti
 if __name__ == "__main__":
     # Установка дат: @EndDate = текущая дата - 1 день, @StartDate = @EndDate - 1 год
     today = date.today()
-    end_date = today - timedelta(days=1)
+    end_date = today 
     start_date = end_date - timedelta(days=365)
     
     try:
