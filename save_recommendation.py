@@ -74,8 +74,8 @@ class RecommendationStorage:
                     PriorityWeight, IsTurboBrand, AvgPrice,
                     IsTopLocal, AvgDailySales, RawNeed,
                     Priority, RecommendedQty, EstimatedCost, Included,
-                    ModelVersion
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ModelVersion, PredictedSum, ExtendedSum, Comment
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             
             # Формируем список кортежей для batch insert
@@ -106,7 +106,10 @@ class RecommendationStorage:
                     row.get('estimated_cost', 0.0),              # EstimatedCost
                     1 if row.get('included', False) else 0,      # Included
                     
-                    model_version                                # ModelVersion
+                    model_version,                               # ModelVersion
+                    row.get('predicted_sum', forecast_amount),   # PredictedSum
+                    row.get('extended_sum', forecast_amount),    # ExtendedSum
+                    row.get('comment', '')                       # Comment
                 )
                 records.append(record)
             

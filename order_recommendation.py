@@ -481,6 +481,9 @@ class OrderRecommender:
             
             # Рассчитываем скорректированный бюджет на основе разницы классов
             adjusted_forecast_amount = forecast_amount
+            class_gap = 0
+            adjustment_factor = 1.0
+            
             if not point_classes.empty:
                 # Получаем классы для данной точки и категории
                 point_class_row = point_classes[
@@ -547,7 +550,11 @@ class OrderRecommender:
                     current_days_until,
                     microregion_id,
                     top_brands_by_region,
-                    target_dow
+                    target_dow,
+                    forecast_amount,  # predicted_sum
+                    adjusted_forecast_amount,  # extended_sum
+                    class_gap,
+                    adjustment_factor
                 )
                 
                 if rec_df.empty:
@@ -611,10 +618,29 @@ class OrderRecommender:
         days_until_visit: int,
         microregion_id: Optional[int],
         top_brands_by_region: Dict[Tuple[int, int], set],
-        target_dow: int
+        target_dow: int,
+        predicted_sum: float = 0.0,
+        extended_sum: float = 0.0,
+        class_gap: int = 0,
+        adjustment_factor: float = 1.0
     ) -> pd.DataFrame:
         """
         Векторизованный расчет рекомендаций для всех брендов категории.
+        
+        Args:
+            cat_rules: Правила брендов для категории
+            point_sales: Средние продажи по брендам
+            days_until_visit: Дней до следующего визита
+            microregion_id: ID микрорегиона
+            top_brands_by_region: Словарь топовых брендов по регионам
+            target_dow: Целевой день недели
+            predicted_sum: Исходный прогноз суммы категории (predicted_sum)
+            extended_sum: Скорректированный бюджет после учета класса точки (extended_sum)
+            class_gap: Разница между общим классом точки и классом категории
+            adjustment_factor: Коэффициент корректировки бюджета
+            
+        Returns:
+            DataFrame с рекомендациями по брендам
         """
         if cat_rules.empty:
             return pd.DataFrame()
@@ -663,7 +689,75 @@ class OrderRecommender:
         df['avg_daily_sales'] = df['avg_sales'].round(2)
         df['avg_price'] = df['avgprice']
         
+        # Поля для бюджета
+        df['predicted_sum'] = predicted_sum
+        df['extended_sum'] = extended_sum
+        
+        # Генерация комментария для каждой рекомендации
+        df['comment'] = df.apply(
+            lambda row: self._generate_recommendation_comment(
+                row, days_until_visit, class_gap, adjustment_factor
+            ), axis=1
+        )
+        
         return df
+    
+    def _generate_recommendation_comment(
+        self,
+        row: pd.Series,
+        days_until_visit: int,
+        class_gap: int,
+        adjustment_factor: float
+    ) -> str:
+        """
+        Генерирует поясняющий комментарий для рекомендации.
+        
+        Args:
+            row: Строка DataFrame с данными рекомендации
+            days_until_visit: Дней до следующего визита
+            class_gap: Разница между общим классом точки и классом категории
+            adjustment_factor: Коэффициент корректировки бюджета
+            
+        Returns:
+            Строка комментария
+        """
+        parts = []
+        
+        # Базовое пояснение - регулярное пополнение
+        if row.get('recommended_qty', 0) > 0:
+            parts.append(f"Регулярное пополнение на {days_until_visit} дн (до след визита)")
+        
+        # Популярность в микрорегионе
+        if row.get('is_top_local', False):
+            parts.append("Популярно на районе")
+        
+        # Турбо-бренд
+        if row.get('is_turbo', 0) == 1:
+            parts.append("Турбо-бренд")
+        
+        # Стратегические марки (MustList, DriveList, NPI, SPEED)
+        importance_label = str(row.get('importance_label', '')).strip().upper()
+        if importance_label:
+            label_map = {
+                'MUSTLIST': 'стратегическая марка (MustList)',
+                'DRIVELIST': 'стратегическая марка (DriveList)',
+                'NPI': 'стратегическая марка (NPI)',
+                'SPEED': 'стратегическая марка (SPEED)'
+            }
+            for key, value in label_map.items():
+                if key in importance_label:
+                    parts.append(value)
+        
+        # Корректировка бюджета из-за разницы классов
+        if class_gap > 0 and adjustment_factor > 1.0:
+            increase_percent = int((adjustment_factor - 1.0) * 100)
+            parts.append(f"Увеличение бюджета на {increase_percent}% (точка продает лучше категории)")
+        
+        # Если ничего не добавлено
+        if not parts:
+            return "Стандартная рекомендация"
+        
+        return " + ".join(parts)
     
     def _calculate_brand_priority(self, brand_row: pd.Series, is_top_in_microregion: bool = False) -> int:
         """Рассчитывает приоритет бренда по формуле."""
