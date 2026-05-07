@@ -96,8 +96,8 @@ def load_predictions_from_db(
             SELECT 
                 PointID,
                 CategoryID,
-                predict_new,
-                DaysNextVisit,
+                Predicted_Category_Sum as predict_new,
+                Days_Until_Next_Visit,
                 VisitDate
             FROM dbo.SNS_ML_Predictions 
             WHERE 1=1
