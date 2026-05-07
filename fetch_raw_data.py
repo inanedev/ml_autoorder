@@ -255,7 +255,7 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
         - Days_Since_Last_Order_Category: дней назад точка брала эту категорию
         - Days_Since_Last_Order_Total: дней назад был любой заказ от точки
         - Average_Interval_Category: средний интервал между закупками категории
-        - Days_Until_Next_Visit: дней до следующего визита точки (для последнего визита 
+        - DaysNextVisit: дней до следующего визита точки (для последнего визита 
           используется значение из визита недельной давности, или 7 если такого визита нет)
         
     Примечание:
@@ -306,7 +306,7 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
     df_result['Days_Since_Last_Order_Category'] = np.nan
     df_result['Days_Since_Last_Order_Total'] = np.nan
     df_result['Average_Interval_Category'] = np.nan
-    df_result['Days_Until_Next_Visit'] = np.nan
+    df_result['DaysNextVisit'] = np.nan
     
     logger.info(f"Расчет фичей истории заказов (векторизованный метод)...")
     
@@ -320,16 +320,16 @@ def add_order_history_features(df: pd.DataFrame, start_date: str, end_date: str)
         df_result[date_col] - df_result['prev_order_date']
     ).dt.days
     
-    # ========== 2. Days_Until_Next_Visit (векторизованно) ==========
+    # ========== 2. DaysNextVisit (векторизованно) ==========
     # Используем groupby + shift(-1) для получения следующей даты заказа
     df_result['next_order_date'] = df_result.groupby(outlet_col)[date_col].shift(-1)
-    df_result['Days_Until_Next_Visit'] = (
+    df_result['DaysNextVisit'] = (
         df_result['next_order_date'] - df_result[date_col]
     ).dt.days
     
     # Для последней записи в каждой точке заполняем значением 7
-    last_visit_mask = df_result['Days_Until_Next_Visit'].isna()
-    df_result.loc[last_visit_mask, 'Days_Until_Next_Visit'] = 7
+    last_visit_mask = df_result['DaysNextVisit'].isna()
+    df_result.loc[last_visit_mask, 'DaysNextVisit'] = 7
     
     # Удаляем временные колонки
     df_result.drop(columns=['prev_order_date', 'next_order_date'], inplace=True)
@@ -540,7 +540,7 @@ def fetch_raw_data(start_date: Union[str, datetime], end_date: Union[str, dateti
         end_date: Конечная дата (YYYY-MM-DD или объект date/datetime)
         add_features: Если True, добавляет календарные фичи для ML
         add_history_features: Если True, добавляет фичи истории заказов (Days_Since_Last_Order_Category,
-                              Days_Since_Last_Order_Total, Average_Interval_Category, Days_Until_Next_Visit)
+                              Days_Since_Last_Order_Total, Average_Interval_Category, DaysNextVisit)
         add_sales_features_flag: Если True, добавляет фичи продаж (Prev_Order_Amount_Category,
                                  SMA_3_Category, SMA_7_Category, SMA_30_Category, 
                                  Momentum_Category, StdDev_Category)
@@ -1164,7 +1164,7 @@ def main():
         # Добавление предсказаний в DataFrame
         # Гарантируем, что прогнозы неотрицательные (продажи не могут быть < 0)
         predictions = np.maximum(predictions, 0)
-        df_test['Predicted_Category_Sum'] = predictions
+        df_test['predict_new'] = predictions
         
         logger.info(f"Прогнозы выполнены. Статистика предсказаний:")
         logger.info(f"  Мин: {predictions.min():.2f}")
@@ -1237,10 +1237,10 @@ def main():
             'month', 'quarter', 'week_of_year', 'is_month_start', 'is_month_end',
             'day_of_month', 'day_of_year', 'days_to_holiday', 'days_from_holiday',
             'Days_Since_Last_Order_Category', 'Days_Since_Last_Order_Total', 'Average_Interval_Category',
-            'Days_Until_Next_Visit',
+            'DaysNextVisit',
             'Prev_Order_Amount_Category', 'SMA_3_Category', 'SMA_7_Category', 'SMA_30_Category',
             'Momentum_Category', 'StdDev_Category',
-            'Predicted_Category_Sum', 'Prediction_Confidence'
+            'predict_new', 'Prediction_Confidence'
         ]
         
         # Фильтрация только существующих колонок
