@@ -230,7 +230,7 @@ def train_models_per_category(df: pd.DataFrame,
         
         # Параметры модели CatBoost
         model_params = {
-            'iterations': 1000,
+            'iterations': 1500,
             'loss_function': RMSLE(),
             'eval_metric': RMSLE_val(),
             'l2_leaf_reg': 1,
@@ -414,7 +414,7 @@ def run_full_pipeline(models_save_dir: str = 'category_models'):
     logger.info("Шаг 1: Загрузка данных для обучения...")
     today = date.today()
     end_date = today
-    start_date = end_date - timedelta(days=365)
+    start_date = end_date - timedelta(days=395)
     
     df_train = load_and_add_features(start_date, end_date)
     logger.info(f"Загружено {len(df_train)} записей для обучения")
