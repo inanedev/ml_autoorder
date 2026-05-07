@@ -69,6 +69,7 @@ class OrderRecommender:
             elif col in ['brandid', 'brand_id', 'brand']:
                 rename_map[col] = 'brand'
             elif col in ['groupid', 'group_id']:
+                # GroupID в SNS_ML_Get_Brand_Rules - это brand_id, маппим на brand
                 rename_map[col] = 'brand'
             elif col in ['brandquantum', 'brand_quantum', 'quantum']:
                 rename_map[col] = 'brandquantum'
@@ -87,6 +88,15 @@ class OrderRecommender:
             df = df.rename(columns=rename_map)
         
         logger.info(f"Колонки после переименования: {list(df.columns)}")
+        
+        # КРИТИЧЕСКИ ВАЖНО: Проверяем, что колонка 'brand' существует после переименования
+        if 'brand' not in df.columns:
+            logger.error(f"Колонка 'brand' отсутствует после переименования! Доступные колонки: {list(df.columns)}")
+            # Пытаемся найти альтернативу
+            possible_brand_cols = [col for col in df.columns if 'brand' in col.lower() or 'id' in col.lower()]
+            if possible_brand_cols:
+                logger.warning(f"Возможные кандидаты на роль бренда: {possible_brand_cols}")
+            return pd.DataFrame()
         
         if 'brandquantum' in df.columns:
             df['brandquantum'] = df['brandquantum'].fillna(1).astype(int)
@@ -347,11 +357,23 @@ class OrderRecommender:
         
         logger.info(f"Колонки после переименования: {list(df.columns)}")
         
+        # КРИТИЧЕСКИ ВАЖНО: Проверяем, что колонка 'brand' существует после переименования
+        if 'brand' not in df.columns:
+            logger.error(f"Колонка 'brand' отсутствует в истории продаж после переименования! Доступные колонки: {list(df.columns)}")
+            possible_brand_cols = [col for col in df.columns if 'brand' in col.lower()]
+            if possible_brand_cols:
+                logger.warning(f"Возможные кандидаты на роль бренда: {possible_brand_cols}")
+            # Возвращаем DataFrame как есть, но с предупреждением
+            # Не прерываем обработку, так как данные могут быть нужны для других целей
+        
         if 'visitdate' in df.columns:
             df['visitdate'] = pd.to_datetime(df['visitdate'], errors='coerce')
             # Проверяем, что visitdate успешно сконвертирован в datetime перед использованием .dt accessor
-            if df['visitdate'].notna().any():
-                df['dayofweek'] = df['visitdate'].dt.isoweekday()
+            # Используем weekday() + 1 для получения isoweekday (1=Пн, ..., 7=Вс)
+            # pandas .dt.weekday возвращает 0=Пн, ..., 6=Вс, поэтому добавляем 1
+            valid_dates = df['visitdate'].notna()
+            if valid_dates.any():
+                df.loc[valid_dates, 'dayofweek'] = df.loc[valid_dates, 'visitdate'].dt.weekday + 1
             
         return df
     
