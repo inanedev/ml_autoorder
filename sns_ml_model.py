@@ -9,6 +9,9 @@ from dotenv import load_dotenv
 # Импорт функций из sns_ml_add_features
 from sns_ml_add_features import load_and_add_features
 
+# Импорт функций для работы с тестовыми данными и сохранения предсказаний
+from sns_ml_fetch_data import fetch_test_data, save_predictions_to_sql, check_and_cleanup_predictions_table
+
 # Импорт CatBoost
 try:
     from catboost import CatBoostRegressor, Pool
@@ -429,3 +432,80 @@ def load_models_per_category(load_dir: str) -> Dict:
         'feature_names': metadata['feature_names'],
         'categorical_features': metadata['categorical_features']
     }
+
+
+def run_full_pipeline(models_save_dir: str = 'category_models'):
+    """
+    Запускает полный пайплайн ML: обучение моделей, сохранение, загрузка тестовых данных,
+    предсказание и сохранение результатов в таблицу SNS_ML_Predictions.
+    
+    Args:
+        models_save_dir: Директория для сохранения обученных моделей
+    """
+    logger.info("=" * 60)
+    logger.info("Запуск полного ML пайплайна")
+    logger.info("=" * 60)
+    
+    # Шаг 1: Загружаем данные с фичами для обучения
+    logger.info("Шаг 1: Загрузка данных для обучения...")
+    today = date.today()
+    end_date = today - timedelta(days=1)
+    start_date = end_date - timedelta(days=365)
+    
+    df_train = load_and_add_features(start_date, end_date)
+    logger.info(f"Загружено {len(df_train)} записей для обучения")
+    
+    # Шаг 2: Обучаем модели для каждой категории
+    logger.info("Шаг 2: Обучение моделей для каждой категории...")
+    models_result = train_models_per_category(
+        df_train,
+        category_col='CategoryID',
+        target_col='SumRoubles',
+        exclude_cols=['VisitDate'],
+        verbose=False
+    )
+    logger.info(f"Обучено {len(models_result['categories'])} моделей")
+    
+    # Шаг 3: Сохраняем модели
+    logger.info("Шаг 3: Сохранение обученных моделей...")
+    save_models_per_category(models_result, models_save_dir)
+    logger.info(f"Модели сохранены в директорию {models_save_dir}")
+    
+    # Шаг 4: Загружаем тестовые данные на сегодняшний день
+    logger.info("Шаг 4: Загрузка тестовых данных для предсказания...")
+    test_df = fetch_test_data(today)
+    logger.info(f"Загружено {len(test_df)} записей для предсказания")
+    
+    # Шаг 5: Проверяем и очищаем таблицу предсказаний от данных за сегодня
+    logger.info("Шаг 5: Проверка и очистка таблицы SNS_ML_Predictions...")
+    check_and_cleanup_predictions_table(today, table_name='SNS_ML_Predictions')
+    
+    # Шаг 6: Делаем предсказания по каждой категории
+    logger.info("Шаг 6: Выполнение предсказаний...")
+    predictions = predict_with_category_models(
+        models_result,
+        test_df,
+        category_col='CategoryID',
+        exclude_cols=['VisitDate']
+    )
+    
+    # Шаг 7: Добавляем предсказания в датафрейм
+    logger.info("Шаг 7: Подготовка результатов к сохранению...")
+    result_df = test_df.copy()
+    result_df['predict_new'] = predictions
+    result_df['CreatedAt'] = datetime.now()
+    
+    # Шаг 8: Сохраняем результаты в таблицу SNS_ML_Predictions
+    logger.info("Шаг 8: Сохранение предсказаний в таблицу SNS_ML_Predictions...")
+    save_predictions_to_sql(result_df, table_name='SNS_ML_Predictions')
+    
+    logger.info("=" * 60)
+    logger.info("ML пайплайн успешно завершён!")
+    logger.info(f"Предсказания сохранены в таблицу SNS_ML_Predictions")
+    logger.info(f"Количество предсказаний: {len(predictions)}")
+    logger.info(f"Среднее значение предсказания: {np.mean(predictions):.4f}")
+    logger.info("=" * 60)
+
+
+if __name__ == "__main__":
+    run_full_pipeline()

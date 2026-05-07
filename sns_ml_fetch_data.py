@@ -207,15 +207,101 @@ def fetch_test_data(target_date: date) -> pd.DataFrame:
             logger.info("Соединение с базой данных закрыто")
 
 
-def save_predictions_to_sql(df: pd.DataFrame, table_name: str = 'SNS_ML_Predictions') -> None:
+def check_and_cleanup_predictions_table(target_date: date, table_name: str = 'SNS_ML_Predictions') -> None:
     """
-    Сохраняет датафрейм с предсказаниями в таблицу SQL Server.
-    Таблица предварительно пересоздаётся через DROP/CREATE.
+    Проверяет существование таблицы SNS_ML_Predictions и её структуру.
+    Если таблица существует и в ней есть данные с датой прогноза target_date,
+    удаляет эти данные.
     
     Args:
-        df: Датафрейм с данными для сохранения (включая Predicted_Category_Sum и Prediction_Confidence)
-        table_name: Имя таблицы в БД (по умолчанию 'SNS_ML_Predictions')
+        target_date: Дата прогноза для проверки и очистки
+        table_name: Имя таблицы для проверки
+    
+    Raises:
+        Exception: При ошибке работы с БД
+    """
+    logger.info(f"Проверка таблицы {table_name} на наличие данных за {target_date}")
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
         
+        # Проверяем существование таблицы
+        check_table_query = f"""
+        SELECT COUNT(*) 
+        FROM INFORMATION_SCHEMA.TABLES 
+        WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = '{table_name}'
+        """
+        cursor.execute(check_table_query)
+        table_exists = cursor.fetchone()[0] > 0
+        
+        if not table_exists:
+            logger.info(f"Таблица {table_name} не существует")
+            return
+        
+        # Проверяем структуру таблицы - наличие колонки predict_new
+        check_column_query = f"""
+        SELECT COUNT(*) 
+        FROM INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = '{table_name}' AND COLUMN_NAME = 'predict_new'
+        """
+        cursor.execute(check_column_query)
+        column_exists = cursor.fetchone()[0] > 0
+        
+        if not column_exists:
+            logger.info(f"Таблица {table_name} существует, но не имеет колонки predict_new. Требуется пересоздание.")
+            drop_query = f"DROP TABLE dbo.{table_name}"
+            cursor.execute(drop_query)
+            conn.commit()
+            logger.info(f"Таблица {table_name} удалена")
+            return
+        
+        # Проверяем наличие колонки VisitDate для фильтрации по дате
+        check_date_column_query = f"""
+        SELECT COUNT(*) 
+        FROM INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = '{table_name}' AND COLUMN_NAME = 'VisitDate'
+        """
+        cursor.execute(check_date_column_query)
+        date_column_exists = cursor.fetchone()[0] > 0
+        
+        if date_column_exists:
+            # Удаляем данные с указанной датой прогноза
+            delete_query = f"DELETE FROM dbo.{table_name} WHERE VisitDate = ?"
+            cursor.execute(delete_query, (target_date,))
+            deleted_rows = cursor.rowcount
+            conn.commit()
+            if deleted_rows > 0:
+                logger.info(f"Удалено {deleted_rows} записей с датой прогноза {target_date}")
+            else:
+                logger.info(f"Данных с датой прогноза {target_date} не найдено")
+        else:
+            logger.warning(f"Колонка VisitDate отсутствует в таблице {table_name}. Очистка по дате невозможна.")
+        
+    except pyodbc.Error as e:
+        logger.error(f"Ошибка базы данных: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка при проверке таблицы: {e}")
+        raise
+    finally:
+        if conn:
+            conn.close()
+            logger.info("Соединение с базой данных закрыто")
+
+
+def save_predictions_to_sql(df: pd.DataFrame, table_name: str = 'SNS_ML_Predictions', recreate_if_structure_mismatch: bool = True) -> None:
+    """
+    Сохраняет датафрейм с предсказаниями в таблицу SQL Server.
+    Если таблица не существует или её структура не совпадает с загружаемыми данными,
+    таблица пересоздаётся через DROP/CREATE.
+    
+    Args:
+        df: Датафрейм с данными для сохранения (включая predict_new)
+        table_name: Имя таблицы в БД (по умолчанию 'SNS_ML_Predictions')
+        recreate_if_structure_mismatch: Флаг пересоздания таблицы при несовпадении структуры
+    
     Raises:
         Exception: При ошибке записи в БД
     """
@@ -226,11 +312,56 @@ def save_predictions_to_sql(df: pd.DataFrame, table_name: str = 'SNS_ML_Predicti
         conn = get_connection()
         cursor = conn.cursor()
         
-        # DROP существующей таблицы
-        drop_query = f"IF OBJECT_ID('dbo.{table_name}', 'U') IS NOT NULL DROP TABLE dbo.{table_name}"
-        logger.info(f"Удаление существующей таблицы: {drop_query}")
-        cursor.execute(drop_query)
-        conn.commit()
+        # Проверяем существование таблицы и её структуру
+        need_recreate = False
+        
+        check_table_query = f"""
+        SELECT COUNT(*) 
+        FROM INFORMATION_SCHEMA.TABLES 
+        WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = '{table_name}'
+        """
+        cursor.execute(check_table_query)
+        table_exists = cursor.fetchone()[0] > 0
+        
+        if not table_exists:
+            logger.info(f"Таблица {table_name} не существует. Будет создана.")
+            need_recreate = True
+        else:
+            # Проверяем структуру - наличие всех необходимых колонок
+            required_columns = set(df.columns)
+            existing_columns = set()
+            
+            check_columns_query = f"""
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = '{table_name}'
+            """
+            cursor.execute(check_columns_query)
+            for row in cursor.fetchall():
+                existing_columns.add(row[0])
+            
+            # Проверяем совпадение структуры
+            if required_columns != existing_columns:
+                missing_cols = required_columns - existing_columns
+                extra_cols = existing_columns - required_columns
+                logger.warning(f"Структура таблицы не совпадает:")
+                if missing_cols:
+                    logger.warning(f"  Отсутствуют колонки: {missing_cols}")
+                if extra_cols:
+                    logger.warning(f"  Лишние колонки: {extra_cols}")
+                
+                if recreate_if_structure_mismatch:
+                    logger.info(f"Таблица будет пересоздана")
+                    need_recreate = True
+                else:
+                    logger.warning(f"Пересоздание таблицы отключено. Попытка вставки в существующую таблицу.")
+        
+        if need_recreate and table_exists:
+            # DROP существующей таблицы
+            drop_query = f"IF OBJECT_ID('dbo.{table_name}', 'U') IS NOT NULL DROP TABLE dbo.{table_name}"
+            logger.info(f"Удаление существующей таблицы: {drop_query}")
+            cursor.execute(drop_query)
+            conn.commit()
         
         # CREATE новой таблицы на основе типов данных DataFrame
         column_definitions = []
