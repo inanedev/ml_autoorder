@@ -333,11 +333,28 @@ def save_models_per_category(models_dict: Dict, save_dir: str) -> None:
         logger.info(f"Модель для категории {category} сохранена в {model_path}")
     
     # Сохраняем метаданные
+    # Преобразуем numpy типы в стандартные Python типы для JSON сериализации
+    def convert_to_python_types(obj):
+        if isinstance(obj, (np.integer, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, list):
+            return [convert_to_python_types(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {key: convert_to_python_types(value) for key, value in obj.items()}
+        else:
+            return obj
+    
     metadata = {
         'categories': models_dict['categories'],
         'feature_names': models_dict['feature_names'],
         'categorical_features': models_dict['categorical_features']
     }
+    metadata = convert_to_python_types(metadata)
+    
     metadata_path = os.path.join(save_dir, "model_metadata.json")
     import json
     with open(metadata_path, 'w', encoding='utf-8') as f:
