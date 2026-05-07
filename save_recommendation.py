@@ -117,7 +117,6 @@ class RecommendationStorage:
             if records:
                 cursor.executemany(insert_query, records)
                 conn.commit()
-                logger.info(f"Сохранено {len(records)} записей рекомендаций для точки {point_id}, категория {category_id} (batch insert)")
                 return len(records)
             else:
                 return 0
@@ -139,6 +138,9 @@ class RecommendationStorage:
         """
         Массовое сохранение рекомендаций для нескольких точек/категорий.
         
+        ИСПОЛЬЗУЕТСЯ ЕДИНЫЙ BATCH INSERT для всех записей сразу.
+        Это значительно быстрее и создает меньше логов, чем построчная вставка.
+        
         Args:
             recommendations_list: Список словарей с параметрами:
                 [
@@ -157,28 +159,105 @@ class RecommendationStorage:
         Returns:
             Общее количество сохраненных записей
         """
-        total_records = 0
+        if not recommendations_list:
+            logger.warning("Пустой список рекомендаций, ничего не сохраняем")
+            return 0
         
-        for rec_params in recommendations_list:
-            try:
-                count = self.save_recommendation(
-                    recommendation_df=rec_params['recommendation_df'],
-                    point_id=rec_params['point_id'],
-                    category_id=rec_params['category_id'],
-                    forecast_amount=rec_params['forecast_amount'],
-                    days_until_visit=rec_params['days_until_visit'],
-                    reference_date=rec_params['reference_date'],
-                    model_version=model_version
-                )
-                total_records += count
-            except Exception as e:
-                logger.error(
-                    f"Не удалось сохранить рекомендации для точки "
-                    f"{rec_params.get('point_id')}, категория {rec_params.get('category_id')}: {e}"
-                )
-                continue
-        
-        return total_records
+        conn = None
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            # Включаем режим быстрой вставки для ODBC
+            cursor.fast_executemany = True
+            
+            insert_query = """
+                INSERT INTO dbo.SNS_ML_Brand_Recommendations (
+                    PointId, CategoryId, ForecastAmount, DaysUntilVisit,
+                    ReferenceDate, TargetDayOfWeek,
+                    BrandId, BrandName, BrandQuantum, ImportanceLabel,
+                    PriorityWeight, IsTurboBrand, AvgPrice,
+                    IsTopLocal, AvgDailySales, RawNeed,
+                    Priority, RecommendedQty, EstimatedCost, Included,
+                    ModelVersion, PredictedSum, ExtendedSum, Comment
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            
+            # Собираем ВСЕ записи из всех рекомендаций в один список
+            all_records = []
+            for rec_params in recommendations_list:
+                try:
+                    recommendation_df = rec_params['recommendation_df']
+                    point_id = rec_params['point_id']
+                    category_id = rec_params['category_id']
+                    forecast_amount = rec_params['forecast_amount']
+                    days_until_visit = rec_params['days_until_visit']
+                    reference_date = rec_params['reference_date']
+                    
+                    if recommendation_df.empty:
+                        continue
+                    
+                    target_dow = reference_date.isoweekday()
+                    
+                    # Добавляем все строки из этого DataFrame в общий список
+                    for _, row in recommendation_df.iterrows():
+                        record = (
+                            point_id,                                    # PointId
+                            category_id,                                 # CategoryId
+                            forecast_amount,                             # ForecastAmount
+                            days_until_visit,                            # DaysUntilVisit
+                            reference_date,                              # ReferenceDate
+                            target_dow,                                  # TargetDayOfWeek
+                            
+                            row['brand_id'],                             # BrandId
+                            row['brand_name'],                           # BrandName
+                            row['quantum'],                              # BrandQuantum
+                            row.get('importance_label', ''),             # ImportanceLabel
+                            row.get('priority', 0) - (5 if row.get('is_turbo', 0) else 0) - (2 if row.get('is_top_local', False) else 0),  # PriorityWeight (базовый)
+                            row.get('is_turbo', 0),                      # IsTurboBrand
+                            row.get('avg_price', 0.0),                   # AvgPrice
+                            
+                            1 if row.get('is_top_local', False) else 0,  # IsTopLocal
+                            row.get('avg_daily_sales', 0.0),             # AvgDailySales
+                            row.get('raw_need', 0.0),                    # RawNeed
+                            
+                            row.get('priority', 0),                      # Priority (итоговый)
+                            row.get('recommended_qty', 0),               # RecommendedQty
+                            row.get('estimated_cost', 0.0),              # EstimatedCost
+                            1 if row.get('included', False) else 0,      # Included
+                            
+                            model_version,                               # ModelVersion
+                            row.get('predicted_sum', forecast_amount),   # PredictedSum
+                            row.get('extended_sum', forecast_amount),    # ExtendedSum
+                            row.get('comment', '')                       # Comment
+                        )
+                        all_records.append(record)
+                        
+                except Exception as e:
+                    logger.error(
+                        f"Ошибка при подготовке рекомендации для точки "
+                        f"{rec_params.get('point_id')}, категория {rec_params.get('category_id')}: {e}"
+                    )
+                    continue
+            
+            # Единый batch insert ВСЕХ записей одним вызовом
+            if all_records:
+                cursor.executemany(insert_query, all_records)
+                conn.commit()
+                logger.info(f"Сохранено {len(all_records)} записей рекомендаций единым батчем (пакетная вставка)")
+                return len(all_records)
+            else:
+                logger.warning("Нет записей для сохранения после обработки всех рекомендаций")
+                return 0
+            
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"Ошибка при пакетном сохранении рекомендаций: {e}")
+            raise
+        finally:
+            if conn:
+                conn.close()
     
     def get_recommendations_by_point(
         self,

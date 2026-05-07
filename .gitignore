@@ -1,1 +1,1 @@
-Nothing should be ignored since only a Python source file (`run_recommendations_only.py`) was modified and no build artifacts, dependencies, or temporary files were included in the changes.
+(save_recommendation.py is a source file, so no .gitignore rules needed)
