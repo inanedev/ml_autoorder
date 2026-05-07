@@ -63,78 +63,219 @@ BEGIN
 
         -- Шаг сетки для 3 км: 3 / 111.0 ≈ 0.027 градуса
         DECLARE @GridStep FLOAT = 0.027; 
-
-        -- 1. Справочник SKU -> Категория
-        -- Фильтруем только активные товары
-        IF OBJECT_ID('tempdb..#ItemMap') IS NOT NULL DROP TABLE #ItemMap;
-        SELECT 
-            CAST(i.iid AS INT) as iid, 
-            CAST(i.itID AS INT) AS CategoryID
-        INTO #ItemMap 
-        FROM DS_ITEMS i 
-        WHERE i.activeFlag = 1 AND i.itID IS NOT NULL;
         
-        CREATE CLUSTERED INDEX IX_ItemMap_iid ON #ItemMap (iid);
+        -- Получаем имя текущей базы данных
+        DECLARE @CurrentDBName NVARCHAR(128) = DB_NAME();
+        
+        -- Находим минимальную дату в текущей базе данных
+        DECLARE @MinDateInCurrentDB DATE;
+        SELECT @MinDateInCurrentDB = MIN(CAST(orDate AS DATE)) FROM DS_Orders WHERE orType = 1;
+        
+        -- Таблица для хранения имен баз данных для запроса
+        IF OBJECT_ID('tempdb..#TargetDatabases') IS NOT NULL DROP TABLE #TargetDatabases;
+        CREATE TABLE #TargetDatabases (DatabaseName NVARCHAR(128));
+        
+        -- Добавляем текущую базу данных
+        INSERT INTO #TargetDatabases (DatabaseName) VALUES (@CurrentDBName);
+        
+        -- Если начальная дата меньше минимальной в текущей БД, ищем архивные базы
+        IF @StartDate < @MinDateInCurrentDB OR @MinDateInCurrentDB IS NULL
+        BEGIN
+            -- Определяем диапазон годов для проверки
+            DECLARE @StartYear INT = YEAR(@StartDate);
+            DECLARE @EndYear INT = YEAR(@EndDate);
+            DECLARE @CurrentYear INT = YEAR(GETDATE());
+            
+            -- Создаем таблицу для перебора годов
+            IF OBJECT_ID('tempdb..#YearsToCheck') IS NOT NULL DROP TABLE #YearsToCheck;
+            CREATE TABLE #YearsToCheck (YearToCheck INT);
+            
+            -- Заполняем года от StartYear до EndYear (но не больше текущего)
+            DECLARE @YearCounter INT = @StartYear;
+            WHILE @YearCounter <= @EndYear AND @YearCounter < @CurrentYear
+            BEGIN
+                INSERT INTO #YearsToCheck (YearToCheck) VALUES (@YearCounter);
+                SET @YearCounter = @YearCounter + 1;
+            END
+            
+            -- Для каждого года проверяем существование архивной БД
+            DECLARE @ArchiveDBName NVARCHAR(128);
+            DECLARE @YearToCheck INT;
+            
+            DECLARE year_cursor CURSOR LOCAL FAST_FORWARD FOR 
+            SELECT YearToCheck FROM #YearsToCheck;
+            
+            OPEN year_cursor;
+            FETCH NEXT FROM year_cursor INTO @YearToCheck;
+            
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                -- Формируем имя архивной БД: оригинальное_название_ГГГГ
+                SET @ArchiveDBName = @CurrentDBName + '_' + CAST(@YearToCheck AS NVARCHAR(4));
+                
+                -- Проверяем существование БД на сервере
+                IF EXISTS (SELECT 1 FROM sys.databases WHERE name = @ArchiveDBName AND state = 0)
+                BEGIN
+                    -- Проверяем, есть ли данные в нужном диапазоне дат в этой БД
+                    DECLARE @SQL NVARCHAR(MAX);
+                    DECLARE @HasData INT;
+                    
+                    SET @SQL = N'SELECT @Result = COUNT(*) FROM [' + @ArchiveDBName + N'].dbo.DS_Orders 
+                                 WHERE orType = 1 AND CAST(orDate AS DATE) >= @StartParam AND CAST(orDate AS DATE) < @EndParam';
+                    
+                    EXEC sp_executesql @SQL, 
+                        N'@Result INT OUTPUT, @StartParam DATE, @EndParam DATE',
+                        @HasData OUTPUT, @StartDate, @EndDate;
+                    
+                    IF @HasData > 0
+                    BEGIN
+                        INSERT INTO #TargetDatabases (DatabaseName) VALUES (@ArchiveDBName);
+                    END
+                END
+                
+                FETCH NEXT FROM year_cursor INTO @YearToCheck;
+            END
+            
+            CLOSE year_cursor;
+            DEALLOCATE year_cursor;
+            
+            DROP TABLE #YearsToCheck;
+        END
+        
+        -- Создаем итоговую временную таблицу для результатов
+        IF OBJECT_ID('tempdb..#RawDataResult') IS NOT NULL DROP TABLE #RawDataResult;
+        CREATE TABLE #RawDataResult (
+            VisitDate DATE,
+            PointID INT,
+            CategoryID INT,
+            BranchID INT,
+            PointClass NVARCHAR(255),
+            PointType NVARCHAR(255),
+            Lat FLOAT,
+            Lon FLOAT,
+            MicroRegionID NVARCHAR(50),
+            SumRoubles DECIMAL(18,2)
+        );
+        
+        -- Переменная для динамического SQL и имени БД
+        DECLARE @TargetDB NVARCHAR(128);
+        DECLARE @DynamicSQL NVARCHAR(MAX);
+        
+        -- Курсор для перебора всех целевых баз данных
+        DECLARE db_cursor CURSOR LOCAL FAST_FORWARD FOR 
+        SELECT DatabaseName FROM #TargetDatabases;
+        
+        OPEN db_cursor;
+        FETCH NEXT FROM db_cursor INTO @TargetDB;
+        
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            -- Формируем динамический SQL для каждой БД
+            -- Определяем префикс для таблиц (если это не текущая БД, добавляем имя БД)
+            DECLARE @TablePrefix NVARCHAR(256);
+            IF @TargetDB = @CurrentDBName
+                SET @TablePrefix = N'';
+            ELSE
+                SET @TablePrefix = N'[' + @TargetDB + N'].dbo.';
+            
+            SET @DynamicSQL = N'
+            -- Временные таблицы для каждой БД
+            IF OBJECT_ID(''tempdb..#ItemMap_' + @TargetDB + N''') IS NOT NULL DROP TABLE #ItemMap_' + @TargetDB + N';
+            SELECT 
+                CAST(i.iid AS INT) as iid, 
+                CAST(i.itID AS INT) AS CategoryID
+            INTO #ItemMap_' + @TargetDB + N' 
+            FROM ' + @TablePrefix + N'DS_ITEMS i 
+            WHERE i.activeFlag = 1 AND i.itID IS NOT NULL;
+            
+            CREATE CLUSTERED INDEX IX_ItemMap_' + @TargetDB + N'_iid ON #ItemMap_' + @TargetDB + N' (iid);
 
-        -- 2. Признаки точек + Расчет Микрорегиона (3x3 км)
-        IF OBJECT_ID('tempdb..#PointFeatures') IS NOT NULL DROP TABLE #PointFeatures;
+            IF OBJECT_ID(''tempdb..#PointFeatures_' + @TargetDB + N''') IS NOT NULL DROP TABLE #PointFeatures_' + @TargetDB + N';
+            SELECT 
+                f.fid AS PointID, 
+                f.distid AS BranchID, 
+                
+                -- Координаты (приводим к float)
+                ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN TRY_CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) AS Lat,
+                ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN TRY_CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) AS Lon,
+                
+                -- Атрибуты
+                ISNULL(MAX(CASE WHEN fa.attrid = 602 THEN fa.attrtext END), ''Unknown'') AS PointClass,
+                ISNULL(MAX(CASE WHEN fa.attrid = 555 THEN fa.attrtext END), ''Unknown'') AS PointType,
+                
+                -- Расчет MicroRegionID (Сетка 3x3 км)
+                CAST(
+                    FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN TRY_CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' 
+                    AS VARCHAR(20)
+                ) + ''_'' + 
+                CAST(
+                    FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN TRY_CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' 
+                    AS VARCHAR(20)
+                ) AS MicroRegionID
+
+            INTO #PointFeatures_' + @TargetDB + N' 
+            FROM ' + @TablePrefix + N'ds_faces f 
+            LEFT JOIN ' + @TablePrefix + N'ds_facesattributes fa ON f.fid = fa.fid AND fa.activeflag = 1 
+            WHERE f.ftype = 1 AND f.factiveflag = 1 
+            GROUP BY f.fid, f.distid;
+
+            CREATE CLUSTERED INDEX IX_PF_' + @TargetDB + N'_PointID ON #PointFeatures_' + @TargetDB + N' (PointID);
+
+            -- Вставка агрегированных данных в итоговую таблицу
+            INSERT INTO #RawDataResult (VisitDate, PointID, CategoryID, BranchID, PointClass, PointType, Lat, Lon, MicroRegionID, SumRoubles)
+            SELECT 
+                CAST(o.orDate AS DATE) AS VisitDate, 
+                o.mfID AS PointID, 
+                m.CategoryID,
+                pf.BranchID,
+                pf.PointClass,
+                pf.PointType,
+                pf.Lat,
+                pf.Lon,
+                pf.MicroRegionID,
+                SUM(ISNULL(oi.SumRoubles, 0)) AS SumRoubles
+            FROM ' + @TablePrefix + N'DS_Orders o 
+            INNER JOIN ' + @TablePrefix + N'DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
+            INNER JOIN #ItemMap_' + @TargetDB + N' m ON CAST(oi.iID AS INT) = m.iid 
+            INNER JOIN #PointFeatures_' + @TargetDB + N' pf ON o.mfID = pf.PointID
+            WHERE o.orType = 1 
+              AND o.orDate >= @StartDateParam
+              AND o.orDate < @EndDateParam
+            GROUP BY CAST(o.orDate AS DATE), o.mfID, m.CategoryID, pf.BranchID, pf.PointClass, pf.PointType, pf.Lat, pf.Lon, pf.MicroRegionID;
+
+            -- Очистка временных таблиц для этой БД
+            DROP TABLE #ItemMap_' + @TargetDB + N';
+            DROP TABLE #PointFeatures_' + @TargetDB + N';
+            ';
+            
+            EXEC sp_executesql @DynamicSQL, 
+                N'@StartDateParam DATE, @EndDateParam DATE',
+                @StartDate, @EndDate;
+            
+            FETCH NEXT FROM db_cursor INTO @TargetDB;
+        END
+        
+        CLOSE db_cursor;
+        DEALLOCATE db_cursor;
+        
+        DROP TABLE #TargetDatabases;
+        
+        -- Возвращаем итоговый результат
         SELECT 
-            f.fid AS PointID, 
-            f.distid AS BranchID, 
-            
-            -- Координаты (приводим к float)
-            ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN TRY_CAST(REPLACE(REPLACE(fa.attrtext, ',', '.'), ' ', '') AS FLOAT) END), 0) AS Lat,
-            ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN TRY_CAST(REPLACE(REPLACE(fa.attrtext, ',', '.'), ' ', '') AS FLOAT) END), 0) AS Lon,
-            
-            -- Атрибуты
-            ISNULL(MAX(CASE WHEN fa.attrid = 602 THEN fa.attrtext END), 'Unknown') AS PointClass, -- Класс точки
-            ISNULL(MAX(CASE WHEN fa.attrid = 555 THEN fa.attrtext END), 'Unknown') AS PointType,  -- Тип точки (Атрибут 555)
-            
-            -- Расчет MicroRegionID (Сетка 3x3 км)
-            -- Формула: FLOOR(Coord / Step) * Step
-            -- Приводим к строке формата "Lat_Lon" для удобного использования как ID
-            CAST(
-                FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN TRY_CAST(REPLACE(REPLACE(fa.attrtext, ',', '.'), ' ', '') AS FLOAT) END), 0) / @GridStep) * @GridStep 
-                AS VARCHAR(20)
-            ) + '_' + 
-            CAST(
-                FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN TRY_CAST(REPLACE(REPLACE(fa.attrtext, ',', '.'), ' ', '') AS FLOAT) END), 0) / @GridStep) * @GridStep 
-                AS VARCHAR(20)
-            ) AS MicroRegionID
-
-        INTO #PointFeatures 
-        FROM ds_faces f 
-        LEFT JOIN ds_facesattributes fa ON f.fid = fa.fid AND fa.activeflag = 1 
-        WHERE f.ftype = 1 AND f.factiveflag = 1 
-        GROUP BY f.fid, f.distid;
-
-        CREATE CLUSTERED INDEX IX_PF_PointID ON #PointFeatures (PointID);
-
-        -- 3. Выгрузка сырых данных (Факт продаж)
-        -- Агрегация только на уровень ДНЯ (если в день несколько накладных)
-        SELECT 
-            CAST(o.orDate AS DATE) AS VisitDate, 
-            o.mfID AS PointID, 
-            m.CategoryID,
-            pf.BranchID,
-            pf.PointClass,
-            pf.PointType,      -- Добавлен атрибут 555
-            pf.Lat,
-            pf.Lon,
-            pf.MicroRegionID,  -- Добавлен микрорегион 3x3 км
-            SUM(ISNULL(oi.SumRoubles, 0)) AS SumRoubles -- Сумма за день
-        FROM DS_Orders o 
-        INNER JOIN DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
-        INNER JOIN #ItemMap m ON CAST(oi.iID AS INT) = m.iid 
-        INNER JOIN #PointFeatures pf ON o.mfID = pf.PointID
-        WHERE o.orType = 1 
-          AND o.orDate >= @StartDate
-          AND o.orDate < @EndDate
-        GROUP BY CAST(o.orDate AS DATE), o.mfID, m.CategoryID, pf.BranchID, pf.PointClass, pf.PointType, pf.Lat, pf.Lon, pf.MicroRegionID;
-
-        -- Очистка временных таблиц
-        DROP TABLE #ItemMap;
-        DROP TABLE #PointFeatures;
+            VisitDate,
+            PointID,
+            CategoryID,
+            BranchID,
+            PointClass,
+            PointType,
+            Lat,
+            Lon,
+            MicroRegionID,
+            SumRoubles
+        FROM #RawDataResult
+        ORDER BY VisitDate, PointID, CategoryID;
+        
+        DROP TABLE #RawDataResult;
         
     END TRY
     BEGIN CATCH
@@ -149,9 +290,25 @@ BEGIN
         PRINT 'Сообщение: ' + @ErrorMessage;
         PRINT 'Строка: ' + CAST(@ErrorLine AS NVARCHAR(10));
         
-        -- Вызов временных таблиц если они существуют
+        -- Очистка временных таблиц если они существуют
         IF OBJECT_ID('tempdb..#ItemMap') IS NOT NULL DROP TABLE #ItemMap;
         IF OBJECT_ID('tempdb..#PointFeatures') IS NOT NULL DROP TABLE #PointFeatures;
+        IF OBJECT_ID('tempdb..#TargetDatabases') IS NOT NULL DROP TABLE #TargetDatabases;
+        IF OBJECT_ID('tempdb..#YearsToCheck') IS NOT NULL DROP TABLE #YearsToCheck;
+        IF OBJECT_ID('tempdb..#RawDataResult') IS NOT NULL DROP TABLE #RawDataResult;
+        
+        -- Закрываем курсоры если они открыты
+        IF CURSOR_STATUS('local', 'year_cursor') >= 0
+        BEGIN
+            CLOSE year_cursor;
+            DEALLOCATE year_cursor;
+        END
+        
+        IF CURSOR_STATUS('local', 'db_cursor') >= 0
+        BEGIN
+            CLOSE db_cursor;
+            DEALLOCATE db_cursor;
+        END
         
         -- Проброс ошибки дальше
         RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
