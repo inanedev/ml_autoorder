@@ -342,8 +342,10 @@ class OrderRecommender:
         logger.info(f"Колонки после переименования: {list(df.columns)}")
         
         if 'visitdate' in df.columns:
-            df['visitdate'] = pd.to_datetime(df['visitdate'])
-            df['dayofweek'] = df['visitdate'].dt.isoweekday()
+            df['visitdate'] = pd.to_datetime(df['visitdate'], errors='coerce')
+            # Проверяем, что visitdate успешно сконвертирован в datetime перед использованием .dt accessor
+            if df['visitdate'].notna().any():
+                df['dayofweek'] = df['visitdate'].dt.isoweekday()
             
         return df
     
@@ -426,15 +428,12 @@ class OrderRecommender:
         # Проверяем наличие колонки с днями до следующего визита
         has_days_until_col = 'days_until_next_visit' in pred_df.columns
         
-        grouped = pred_df.groupby(['pointid', 'categoryid'], as_index=False)[value_col].mean()
+        grouped = pred_df.groupby(['pointid', 'categoryid'], as_index=False)[value_col].mean().rename(columns={value_col: 'sumroubles'})
         
         # Если есть колонка days_until_next_visit, добавляем её в группировку
         if has_days_until_col:
             grouped_days = pred_df.groupby(['pointid', 'categoryid'], as_index=False)['days_until_next_visit'].first()
             grouped = grouped.merge(grouped_days, on=['pointid', 'categoryid'], how='left')
-        
-        if value_col != 'sumroubles':
-            grouped = grouped.rename(columns={value_col: 'sumroubles'})
         
         total_pairs = len(grouped)
         logger.info(f"Обработка {total_pairs} уникальных пар точка-категория...")
