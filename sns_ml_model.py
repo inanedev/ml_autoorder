@@ -5,6 +5,7 @@ from typing import List, Tuple, Optional, Dict
 import logging
 import os
 from dotenv import load_dotenv
+import math
 
 # Импорт функций из sns_ml_add_features
 from sns_ml_add_features import load_and_add_features
@@ -12,13 +13,7 @@ from sns_ml_add_features import load_and_add_features
 # Импорт функций для работы с тестовыми данными и сохранения предсказаний
 from sns_ml_fetch_data import fetch_test_data, save_predictions_to_sql, check_and_cleanup_predictions_table
 
-# Импорт CatBoost
-try:
-    from catboost import CatBoostRegressor, Pool
-    CATBOOST_AVAILABLE = True
-except ImportError:
-    CATBOOST_AVAILABLE = False
-    logger.warning("CatBoost не установлен. Обучение моделей будет недоступно.")
+
 
 
 # Загрузка переменных окружения из .env файла
@@ -31,102 +26,54 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Импорт CatBoost
+try:
+    from catboost import CatBoostRegressor, Pool
+    CATBOOST_AVAILABLE = True
+except ImportError:
+    CATBOOST_AVAILABLE = False
+    logger.warning("CatBoost не установлен. Обучение моделей будет недоступно.")
 
-class RMSLE:
-    """
-    Метрика RMSLE (Root Mean Squared Logarithmic Error) для CatBoost.
-    Вычисляет корень из среднего квадратичного логарифмического ошибки.
-    """
-    
-    @staticmethod
-    def calc_ders(approx, target, weight):
-        """
-        Вычисляет градиент и гессиан для RMSLE.
-        
-        Args:
-            approx: Предсказания модели (до применения экспоненты)
-            target: Целевые значения
-            weight: Веса наблюдений
-            
-        Returns:
-            Кортеж (grad, hess) - градиенты и гессианы
-        """
-        # Преобразуем предсказания обратно из логарифмического пространства
-        pred = np.exp(approx) - 1
-        
-        # Вычисляем градиент и гессиан
-        grad = (pred - target) / (pred + 1)
-        hess = 1.0 / (pred + 1)
-        
-        return grad, hess
-    
-    @staticmethod
-    def get_final_metric(approx, target, weight):
-        """
-        Вычисляет итоговое значение метрики RMSLE.
-        
-        Args:
-            approx: Предсказания модели (до применения экспоненты)
-            target: Целевые значения
-            weight: Веса наблюдений
-            
-        Returns:
-            Значение метрики RMSLE
-        """
-        pred = np.exp(approx) - 1
-        log_pred = np.log(pred + 1)
-        log_target = np.log(target + 1)
-        
-        rmsle = np.sqrt(np.mean((log_pred - log_target) ** 2))
-        return ('RMSLE', rmsle)
+class RMSLE(object):
+    def calc_ders_range(self, approxes, targets, weights):
+        assert len(approxes) == len(targets)
+        if weights is not None:
+            assert len(weights) == len(approxes)
 
+        result = []
+        for index in range(len(targets)):
+            val = max(approxes[index], 0)
+            der1 = math.log1p(targets[index]) - math.log1p(max(0, approxes[index]))
+            der2 = -1 / (max(0, approxes[index]) + 1)
 
-class RMSLE_val:
-    """
-    Метрика RMSLE для валидации.
-    Используется для оценки качества модели на валидационной выборке.
-    """
-    
-    @staticmethod
-    def calc_ders(approx, target, weight):
-        """
-        Вычисляет градиент и гессиан для RMSLE.
-        
-        Args:
-            approx: Предсказания модели (до применения экспоненты)
-            target: Целевые значения
-            weight: Веса наблюдений
-            
-        Returns:
-            Кортеж (grad, hess) - градиенты и гессианы
-        """
-        pred = np.exp(approx) - 1
-        
-        grad = (pred - target) / (pred + 1)
-        hess = 1.0 / (pred + 1)
-        
-        return grad, hess
-    
-    @staticmethod
-    def get_final_metric(approx, target, weight):
-        """
-        Вычисляет итоговое значение метрики RMSLE.
-        
-        Args:
-            approx: Предсказания модели (до применения экспоненты)
-            target: Целевые значения
-            weight: Веса наблюдений
-            
-        Returns:
-            Кортеж (имя_метрики, значение)
-        """
-        pred = np.exp(approx) - 1
-        log_pred = np.log(pred + 1)
-        log_target = np.log(target + 1)
-        
-        rmsle = np.sqrt(np.mean((log_pred - log_target) ** 2))
-        return ('RMSLE_val', rmsle)
+            if weights is not None:
+                der1 *= weights[index]
+                der2 *= weights[index]
 
+            result.append((der1, der2))
+        return result
+class RMSLE_val(object):
+    def get_final_error(self, error, weight):
+        return np.sqrt(error / (weight + 1e-38))
+
+    def is_max_optimal(self):
+        return False
+
+    def evaluate(self, approxes, target, weight):
+        assert len(approxes) == 1
+        assert len(target) == len(approxes[0])
+
+        approx = approxes[0]
+
+        error_sum = 0.0
+        weight_sum = 0.0
+
+        for i in range(len(approx)):
+            w = 1.0 if weight is None else weight[i]
+            weight_sum += w
+            error_sum += w * ((math.log1p(max(0, approx[i])) - math.log1p(max(0, target[i])))**2)
+
+        return error_sum, weight_sum
 
 def prepare_data_for_training(df: pd.DataFrame, 
                                target_col: str = 'SumRoubles',
