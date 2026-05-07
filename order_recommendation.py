@@ -59,6 +59,8 @@ class OrderRecommender:
         # Нормализуем имена колонок в нижний регистр
         df.columns = [col.lower() for col in df.columns]
         
+        logger.info(f"Колонки в правилах брендов после нормализации: {list(df.columns)}")
+        
         # Явно переименовываем возможные вариации имен колонок
         rename_map = {}
         for col in df.columns:
@@ -78,9 +80,13 @@ class OrderRecommender:
                 rename_map[col] = 'avgprice'
             elif col in ['importancelabel', 'importance_label']:
                 rename_map[col] = 'importancelabel'
+            elif col in ['brandname', 'brand_name', 'attrvaluename']:
+                rename_map[col] = 'brand_name'
         
         if rename_map:
             df = df.rename(columns=rename_map)
+        
+        logger.info(f"Колонки после переименования: {list(df.columns)}")
         
         if 'brandquantum' in df.columns:
             df['brandquantum'] = df['brandquantum'].fillna(1).astype(int)

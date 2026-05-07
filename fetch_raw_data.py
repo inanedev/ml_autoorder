@@ -59,7 +59,10 @@ def get_connection() -> pyodbc.Connection:
         f"PWD={SQL_CONFIG['password']}"
     )
     logger.info("Установление соединения с базой данных...")
-    return pyodbc.connect(conn_str)
+    conn = pyodbc.connect(conn_str)
+    # Включаем режим быстрой вставки для ODBC (batch insert)
+    conn.fast_executemany = True
+    return conn
 
 
 def validate_dates(start_date: Union[str, datetime], end_date: Union[str, datetime]) -> tuple:
