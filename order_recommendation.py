@@ -293,17 +293,17 @@ class OrderRecommender:
         # Категоризация на 10 групп внутри каждой категории
         def assign_category_class(group):
             if len(group) == 0:
-                group['point_category_class'] = 1
-                return group
+                result = pd.DataFrame({'pointid': [], 'categoryid': [], 'category_sales': [], 'point_category_class': []})
+                return result
             
             # Пытаемся использовать qcut для равного количества точек в каждом классе
             try:
                 n_unique = group['category_sales'].nunique()
                 q = min(10, len(group), n_unique)
                 if q < 2:
-                    group['point_category_class'] = 1
+                    point_category_class = pd.Series([1] * len(group))
                 else:
-                    group['point_category_class'] = pd.qcut(
+                    point_category_class = pd.qcut(
                         group['category_sales'],
                         q=q,
                         labels=False,
@@ -311,17 +311,27 @@ class OrderRecommender:
                     ) + 1
             except Exception:
                 # Если qcut не работает (много одинаковых значений), используем cut
-                group['point_category_class'] = pd.cut(
+                point_category_class = pd.cut(
                     group['category_sales'],
                     bins=10,
                     labels=False
                 ) + 1
-                group['point_category_class'] = group['point_category_class'].fillna(1).astype(int)
+                point_category_class = point_category_class.fillna(1).astype(int)
             
-            return group
+            # Явно создаем результат с сохранением categoryid через group.name
+            # Это необходимо для pandas 2.x, где groupby().apply() по умолчанию исключает колонки группировки
+            result = pd.DataFrame({
+                'pointid': group['pointid'].values,
+                'categoryid': group.name,  # group.name содержит значение группы (categoryid)
+                'category_sales': group['category_sales'].values,
+                'point_category_class': point_category_class.values if hasattr(point_category_class, 'values') else point_category_class
+            })
+            
+            return result
         
         point_category_class = point_category_totals.groupby('categoryid', group_keys=False).apply(
-            assign_category_class
+            assign_category_class,
+            include_groups=False  # Убираем предупреждение FutureWarning в pandas 2.x
         ).reset_index(drop=True)  # Сбрасываем индекс, чтобы сохранить все колонки
         
         # Нормализуем имена колонок в результатах
