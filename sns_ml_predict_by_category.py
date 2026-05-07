@@ -251,7 +251,7 @@ def main():
     
     # Сохраняем результаты
     logger.info("Сохранение результатов в SNS_ML_Predictions...")
-    save_predictions_to_sql(result_df, table_name='SNS_ML_Predictions')
+    save_predictions_to_sql(result_df, table_name='SNS_ML_Predictions', target_date=today)
     
     logger.info("=" * 60)
     logger.info("Предсказание завершено успешно!")

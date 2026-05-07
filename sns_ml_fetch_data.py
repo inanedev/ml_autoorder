@@ -291,15 +291,19 @@ def check_and_cleanup_predictions_table(target_date: date, table_name: str = 'SN
             logger.info("Соединение с базой данных закрыто")
 
 
-def save_predictions_to_sql(df: pd.DataFrame, table_name: str = 'SNS_ML_Predictions', recreate_if_structure_mismatch: bool = True) -> None:
+def save_predictions_to_sql(df: pd.DataFrame, table_name: str = 'SNS_ML_Predictions', 
+                            target_date: Optional[date] = None, 
+                            recreate_if_structure_mismatch: bool = True) -> None:
     """
     Сохраняет датафрейм с предсказаниями в таблицу SQL Server.
-    Если таблица не существует или её структура не совпадает с загружаемыми данными,
-    таблица пересоздаётся через DROP/CREATE.
+    Если таблица не существует — создаёт её.
+    Если таблица существует и структура совпадает — удаляет данные за target_date и вставляет новые.
+    Если таблица существует но структура не совпадает — пересоздаёт таблицу (если флаг установлен).
     
     Args:
         df: Датафрейм с данными для сохранения (включая predict_new)
         table_name: Имя таблицы в БД (по умолчанию 'SNS_ML_Predictions')
+        target_date: Дата прогноза для очистки данных перед вставкой
         recreate_if_structure_mismatch: Флаг пересоздания таблицы при несовпадении структуры
     
     Raises:
@@ -313,7 +317,7 @@ def save_predictions_to_sql(df: pd.DataFrame, table_name: str = 'SNS_ML_Predicti
         cursor = conn.cursor()
         
         # Проверяем существование таблицы и её структуру
-        need_recreate = False
+        need_create = False
         
         check_table_query = f"""
         SELECT COUNT(*) 
@@ -325,7 +329,7 @@ def save_predictions_to_sql(df: pd.DataFrame, table_name: str = 'SNS_ML_Predicti
         
         if not table_exists:
             logger.info(f"Таблица {table_name} не существует. Будет создана.")
-            need_recreate = True
+            need_create = True
         else:
             # Проверяем структуру - наличие всех необходимых колонок
             required_columns = set(df.columns)
@@ -352,35 +356,44 @@ def save_predictions_to_sql(df: pd.DataFrame, table_name: str = 'SNS_ML_Predicti
                 
                 if recreate_if_structure_mismatch:
                     logger.info(f"Таблица будет пересоздана")
-                    need_recreate = True
+                    # DROP существующей таблицы
+                    drop_query = f"IF OBJECT_ID('dbo.{table_name}', 'U') IS NOT NULL DROP TABLE dbo.{table_name}"
+                    logger.info(f"Удаление существующей таблицы: {drop_query}")
+                    cursor.execute(drop_query)
+                    conn.commit()
+                    need_create = True
                 else:
                     logger.warning(f"Пересоздание таблицы отключено. Попытка вставки в существующую таблицу.")
-        
-        if need_recreate and table_exists:
-            # DROP существующей таблицы
-            drop_query = f"IF OBJECT_ID('dbo.{table_name}', 'U') IS NOT NULL DROP TABLE dbo.{table_name}"
-            logger.info(f"Удаление существующей таблицы: {drop_query}")
-            cursor.execute(drop_query)
-            conn.commit()
-        
-        # CREATE новой таблицы на основе типов данных DataFrame
-        column_definitions = []
-        for col in df.columns:
-            dtype = df[col].dtype
-            if pd.api.types.is_integer_dtype(dtype):
-                sql_type = "BIGINT"
-            elif pd.api.types.is_float_dtype(dtype):
-                sql_type = "FLOAT"
-            elif pd.api.types.is_datetime64_any_dtype(dtype):
-                sql_type = "DATETIME"
             else:
-                sql_type = "NVARCHAR(MAX)"
-            column_definitions.append(f"[{col}] {sql_type}")
+                # Структура совпадает - удаляем данные за дату прогноза
+                if target_date is not None and 'VisitDate' in existing_columns:
+                    delete_query = f"DELETE FROM dbo.{table_name} WHERE VisitDate = ?"
+                    cursor.execute(delete_query, (target_date,))
+                    deleted_rows = cursor.rowcount
+                    conn.commit()
+                    logger.info(f"Удалено {deleted_rows} записей с датой прогноза {target_date}")
+                elif target_date is not None:
+                    logger.warning(f"Колонка VisitDate отсутствует в таблице {table_name}. Очистка по дате невозможна.")
         
-        create_query = f"CREATE TABLE dbo.{table_name} (\n    " + ",\n    ".join(column_definitions) + "\n)"
-        logger.info(f"Создание новой таблицы: {create_query}")
-        cursor.execute(create_query)
-        conn.commit()
+        # CREATE таблицы если нужно
+        if need_create:
+            column_definitions = []
+            for col in df.columns:
+                dtype = df[col].dtype
+                if pd.api.types.is_integer_dtype(dtype):
+                    sql_type = "BIGINT"
+                elif pd.api.types.is_float_dtype(dtype):
+                    sql_type = "FLOAT"
+                elif pd.api.types.is_datetime64_any_dtype(dtype):
+                    sql_type = "DATETIME"
+                else:
+                    sql_type = "NVARCHAR(MAX)"
+                column_definitions.append(f"[{col}] {sql_type}")
+            
+            create_query = f"CREATE TABLE dbo.{table_name} (\n    " + ",\n    ".join(column_definitions) + "\n)"
+            logger.info(f"Создание новой таблицы: {create_query}")
+            cursor.execute(create_query)
+            conn.commit()
         
         # Вставка данных
         logger.info(f"Вставка {len(df)} записей в таблицу {table_name}")
