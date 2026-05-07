@@ -322,7 +322,7 @@ class OrderRecommender:
         
         point_category_class = point_category_totals.groupby('categoryid', group_keys=False).apply(
             assign_category_class
-        )
+        ).reset_index(drop=True)  # Сбрасываем индекс, чтобы сохранить все колонки
         
         # Нормализуем имена колонок в результатах
         if not point_totals.empty:
