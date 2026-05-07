@@ -175,7 +175,7 @@ def save_all_recommendations(
     model_version: str = "v1.0.0"
 ) -> int:
     """
-    Сохраняет все рекомендации в базу данных.
+    Сохраняет все рекомендации в базу данных одним батчем.
     
     Args:
         recommendations: Список кортежей с рекомендациями
@@ -186,11 +186,12 @@ def save_all_recommendations(
         Количество сохраненных записей
     """
     storage = RecommendationStorage()
-    total_saved = 0
     
-    logger.info(f"Сохранение {len(recommendations)} наборов рекомендаций в БД...")
+    logger.info(f"Подготовка {len(recommendations)} наборов рекомендаций для пакетного сохранения в БД...")
     
-    for idx, (point_id, category_id, forecast_amount, rec_df) in enumerate(recommendations):
+    # Формируем список параметров для batch save
+    recommendations_list = []
+    for point_id, category_id, forecast_amount, rec_df in recommendations:
         try:
             # Получаем days_until_visit из первой строки recommendation DataFrame
             # Если колонка существует, используем её, иначе fallback на 7
@@ -199,23 +200,24 @@ def save_all_recommendations(
             else:
                 save_days_until_visit = 7
             
-            saved_count = storage.save_recommendation(
-                recommendation_df=rec_df,
-                point_id=point_id,
-                category_id=category_id,
-                forecast_amount=forecast_amount,
-                days_until_visit=save_days_until_visit,
-                reference_date=reference_date,
-                model_version=model_version
-            )
-            total_saved += saved_count
-            
-            if (idx + 1) % 10 == 0:
-                logger.info(f"Сохранено {idx + 1}/{len(recommendations)} наборов рекомендаций ({total_saved} записей)")
-                
+            recommendations_list.append({
+                'recommendation_df': rec_df,
+                'point_id': point_id,
+                'category_id': category_id,
+                'forecast_amount': forecast_amount,
+                'days_until_visit': save_days_until_visit,
+                'reference_date': reference_date
+            })
         except Exception as e:
-            logger.error(f"Ошибка при сохранении рекомендации для точки {point_id}, категории {category_id}: {e}")
+            logger.error(f"Ошибка при подготовке рекомендации для точки {point_id}, категории {category_id}: {e}")
             continue
+    
+    # Сохраняем всё одним батчем
+    logger.info(f"Сохранение {len(recommendations_list)} наборов рекомендаций в БД (batch insert)...")
+    total_saved = storage.save_recommendations_batch(
+        recommendations_list=recommendations_list,
+        model_version=model_version
+    )
     
     logger.info(f"Всего сохранено {total_saved} записей рекомендаций")
     return total_saved
