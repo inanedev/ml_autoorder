@@ -449,7 +449,7 @@ def run_full_pipeline(models_save_dir: str = 'category_models'):
     # Шаг 1: Загружаем данные с фичами для обучения
     logger.info("Шаг 1: Загрузка данных для обучения...")
     today = date.today()
-    end_date = today - timedelta(days=1)
+    end_date = today
     start_date = end_date - timedelta(days=365)
     
     df_train = load_and_add_features(start_date, end_date)
