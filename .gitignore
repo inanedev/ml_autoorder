@@ -1,30 +1,4 @@
 ```
-# Python
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-
-# Environment
-.venv/
-venv/
-.env
-.env.local
-*.env.*
-
-# Logs and temporary files
-*.log
-*.tmp
-*.swp
-
-# Editors
-.vscode/
-.idea/
-
-# Dependencies and builds
-node_modules/
-dist/
-build/
-.mypy_cache/
-.pytest_cache/
 ```
