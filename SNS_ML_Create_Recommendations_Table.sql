@@ -40,6 +40,9 @@ CREATE TABLE [dbo].[SNS_ML_Brand_Recommendations](
     -- Метаданные записи
     [CreatedAt] DATETIME NOT NULL CONSTRAINT [DF_SNS_ML_Brand_Recommendations_CreatedAt] DEFAULT GETDATE(),
     [ModelVersion] NVARCHAR(50) NULL,          -- Версия ML модели (опционально)
+    [PredictedSum] DECIMAL(18,2) NULL,         -- Исходный прогноз суммы категории из ML-модели
+    [ExtendedSum] DECIMAL(18,2) NULL,          -- Скорректированный бюджет после учёта разницы классов
+    [Comment] NVARCHAR(500) NULL,              -- Пояснение для сотрудника
     
     CONSTRAINT [PK_SNS_ML_Brand_Recommendations] PRIMARY KEY CLUSTERED 
     (
@@ -149,4 +152,13 @@ EXEC sys.sp_addextendedproperty @name=N'MS_Description', @value=N'Дата и в
 GO
 
 EXEC sys.sp_addextendedproperty @name=N'MS_Description', @value=N'Версия ML модели, сгенерировавшей рекомендацию' , @level0type=N'SCHEMA',@level0name=N'dbo', @level1type=N'TABLE',@level1name=N'SNS_ML_Brand_Recommendations', @level2type=N'COLUMN',@level2name=N'ModelVersion'
+GO
+
+EXEC sys.sp_addextendedproperty @name=N'MS_Description', @value=N'Исходный прогноз суммы категории из ML-модели (до корректировки по классу точки)' , @level0type=N'SCHEMA',@level0name=N'dbo', @level1type=N'TABLE',@level1name=N'SNS_ML_Brand_Recommendations', @level2type=N'COLUMN',@level2name=N'PredictedSum'
+GO
+
+EXEC sys.sp_addextendedproperty @name=N'MS_Description', @value=N'Скорректированный бюджет категории после учёта разницы между общим классом точки и классом категории (увеличивается на 10% за каждую единицу разрыва)' , @level0type=N'SCHEMA',@level0name=N'dbo', @level1type=N'TABLE',@level1name=N'SNS_ML_Brand_Recommendations', @level2type=N'COLUMN',@level2name=N'ExtendedSum'
+GO
+
+EXEC sys.sp_addextendedproperty @name=N'MS_Description', @value=N'Пояснение для сотрудника, почему рассчитано такое значение рекомендации (например: "Регулярное пополнение на 7 дн + Популярно на районе + Турбо-бренд")' , @level0type=N'SCHEMA',@level0name=N'dbo', @level1type=N'TABLE',@level1name=N'SNS_ML_Brand_Recommendations', @level2type=N'COLUMN',@level2name=N'Comment'
 GO
