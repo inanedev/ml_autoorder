@@ -61,7 +61,7 @@ def get_connection() -> pyodbc.Connection:
     logger.info("Установление соединения с базой данных...")
     conn = pyodbc.connect(conn_str)
     # Включаем режим быстрой вставки для ODBC (batch insert)
-    conn.fast_executemany = True
+    # fast_executemany устанавливается на курсоре, а не на соединении
     return conn
 
 
@@ -653,7 +653,7 @@ def export_features_to_sql(df: pd.DataFrame, table_name: str = "SNS_ML_Features_
         )
         
         connection_string = f"mssql+pyodbc:///?odbc_connect={params}"
-        engine = create_engine(connection_string, fast_executemany=True)
+        engine = create_engine(connection_string)
         
         logger.info(f"Подключение к базе данных для выгрузки в таблицу {table_name}...")
         
@@ -1255,7 +1255,7 @@ def main():
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Включаем режим быстрой пакетной вставки для pyodbc
+        # Включаем режим быстрой пакетной вставки для pyodbc (на уровне курсора)
         cursor.fast_executemany = True
         
         # Формирование SQL запроса для вставки

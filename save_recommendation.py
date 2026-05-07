@@ -60,7 +60,7 @@ class RecommendationStorage:
             conn = get_connection()
             cursor = conn.cursor()
             
-            # Включаем режим быстрой вставки для ODBC
+            # Включаем режим быстрой вставки для ODBC (на уровне курсора)
             cursor.fast_executemany = True
             
             # Подготовка данных для вставки
