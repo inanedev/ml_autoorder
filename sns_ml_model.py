@@ -33,6 +33,31 @@ except ImportError:
     CATBOOST_AVAILABLE = False
     logger.warning("CatBoost не установлен. Обучение моделей будет недоступно.")
 
+class BiasRatioMetric(object):
+    def get_final_error(self, error, weight):
+        return error
+
+    def is_max_optimal(self):
+        # Нам нужно, чтобы отношение было 1.0, поэтому максимизация не наш путь
+        return False
+
+    def evaluate(self, approxes, target, weight):
+        # approxes — это список векторов (по одному на каждое предсказание)
+        # Для регрессии берем [0]
+        # Так как Tweedie использует log-link, approxes приходят в лог-шкале
+        assert len(approxes) == 1
+        assert len(target) == len(approxes[0])
+        
+        preds = np.exp(approxes[0])
+        sum_target = np.sum(target)
+        sum_preds = np.sum(preds)
+        
+        # Считаем отношение. Если сумма предсказаний = 0, возвращаем 0
+        ratio = sum_target / sum_preds if sum_preds != 0 else 0
+        
+        return ratio, 1 # Возвращаем значение и вес (обычно 1)
+
+
 def prepare_data_for_training(df: pd.DataFrame, 
                                target_col: str = 'SumRoubles',
                                exclude_cols: Optional[List[str]] = None) -> Tuple[pd.DataFrame, pd.Series, List[str], List[str]]:
@@ -158,14 +183,18 @@ def train_single_model(df: pd.DataFrame,
     
     # Параметры модели CatBoost с Tweedie loss
     model_params = {
-        'iterations': 1000,
-        'learning_rate': 0.05,
+        'iterations': 3000,
+        'learning_rate': 0.01,
         'depth': 6,
-        'loss_function': 'Tweedie:tweedie_variance_power=1.5',
-        'eval_metric': 'Tweedie',
+        'loss_function': 'Tweedie:variance_power=1.4',
+        'eval_metric': BiasRatioMetric(),
+        'custom_metric':['RMSE', 'MAE'],
         'random_seed': 42,
-        'verbose': 100 if verbose else 0
-    }
+        'verbose': 100 if verbose else 0,
+        'grow_policy':'Lossguide',
+        'l2_leaf_reg':1,
+        'max_leaves':31
+        }
     
     # Создаём и обучаем модель
     logger.info("Обучение модели с функцией потерь Tweedie...")
