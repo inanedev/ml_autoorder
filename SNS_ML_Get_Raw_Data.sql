@@ -201,7 +201,12 @@ BEGIN
               AND CAST(o.orDate AS DATE) >= ''' + CONVERT(NVARCHAR(10), @CategoryMatrixStart, 120) + N'''
               AND CAST(o.orDate AS DATE) < ''' + CONVERT(NVARCHAR(10), @EndDate, 120) + N''';
             
-            CREATE CLUSTERED INDEX IX_CategoryMatrix_' + @TargetDB + N'_CategoryID ON #CategoryMatrix_' + @TargetDB + N' (CategoryID);
+            -- Создаем индекс с фиксированным именем для CategoryMatrix
+            DECLARE @idx_name_catmatrix NVARCHAR(256) = 'IX_CategoryMatrix_' + REPLACE(@TargetDB, '[', '') + REPLACE(']', '') + '_CategoryID';
+            DECLARE @create_idx_catmatrix NVARCHAR(MAX) = 
+                'CREATE CLUSTERED INDEX ' + QUOTENAME(@idx_name_catmatrix) + 
+                ' ON #CategoryMatrix_' + @TargetDB + N' (CategoryID);';
+            EXEC sp_executesql @create_idx_catmatrix;
             
             -- 2. Справочник активных SKU с категориями
             IF OBJECT_ID(''tempdb..#ItemMap_' + @TargetDB + N''') IS NOT NULL DROP TABLE #ItemMap_' + @TargetDB + N';
@@ -212,7 +217,12 @@ BEGIN
             FROM ' + @TablePrefix + N'DS_ITEMS i 
             WHERE i.activeFlag = 1 AND i.itID IS NOT NULL;
             
-            CREATE CLUSTERED INDEX IX_ItemMap_' + @TargetDB + N'_iid ON #ItemMap_' + @TargetDB + N' (iid);
+            -- Создаем индекс с фиксированным именем для ItemMap
+            DECLARE @idx_name_itemmap NVARCHAR(256) = 'IX_ItemMap_' + REPLACE(@TargetDB, '[', '') + REPLACE(']', '') + '_iid';
+            DECLARE @create_idx_itemmap NVARCHAR(MAX) = 
+                'CREATE CLUSTERED INDEX ' + QUOTENAME(@idx_name_itemmap) + 
+                ' ON #ItemMap_' + @TargetDB + N' (iid);';
+            EXEC sp_executesql @create_idx_itemmap;
 
             -- 3. Признаки точек продаж с координатами
             IF OBJECT_ID(''tempdb..#PointFeatures_' + @TargetDB + N''') IS NOT NULL DROP TABLE #PointFeatures_' + @TargetDB + N';
@@ -244,7 +254,12 @@ BEGIN
             WHERE f.ftype = 1 AND f.factiveflag = 1 
             GROUP BY f.fid, f.distid;
 
-            CREATE CLUSTERED INDEX IX_PF_' + @TargetDB + N'_PointID ON #PointFeatures_' + @TargetDB + N' (PointID);
+            -- Создаем индекс с фиксированным именем для PointFeatures
+            DECLARE @idx_name_pf NVARCHAR(256) = 'IX_PF_' + REPLACE(@TargetDB, '[', '') + REPLACE(']', '') + '_PointID';
+            DECLARE @create_idx_pf NVARCHAR(MAX) = 
+                'CREATE CLUSTERED INDEX ' + QUOTENAME(@idx_name_pf) + 
+                ' ON #PointFeatures_' + @TargetDB + N' (PointID);';
+            EXEC sp_executesql @create_idx_pf;
 
             -- 4. Извлекаем все визиты из DS_merPointsVisits
             IF OBJECT_ID(''tempdb..#AllVisits_' + @TargetDB + N''') IS NOT NULL DROP TABLE #AllVisits_' + @TargetDB + N';
@@ -257,7 +272,12 @@ BEGIN
               AND CAST(mpv.vdate AS DATE) < @EndDateParam
             GROUP BY CAST(mpv.vdate AS DATE), CAST(mpv.fid AS INT);
             
-            CREATE CLUSTERED INDEX IX_AllVisits_' + @TargetDB + N'_VisitPoint ON #AllVisits_' + @TargetDB + N' (VisitDate, PointID);
+            -- Создаем индекс с фиксированным именем (временные таблицы уникальны в сессии)
+            DECLARE @idx_name_allvisits NVARCHAR(256) = 'IX_AllVisits_' + REPLACE(@TargetDB, '[', '') + REPLACE(']', '') + '_VisitPoint';
+            DECLARE @create_idx_allvisits NVARCHAR(MAX) = 
+                'CREATE CLUSTERED INDEX ' + QUOTENAME(@idx_name_allvisits) + 
+                ' ON #AllVisits_' + @TargetDB + N' (VisitDate, PointID);';
+            EXEC sp_executesql @create_idx_allvisits;
 
             -- 5. Агрегируем продажи по дням, точкам и категориям
             IF OBJECT_ID(''tempdb..#SalesAgg_' + @TargetDB + N''') IS NOT NULL DROP TABLE #SalesAgg_' + @TargetDB + N';
@@ -275,7 +295,12 @@ BEGIN
               AND o.orDate < @EndDateParam
             GROUP BY CAST(o.orDate AS DATE), o.mfID, m.CategoryID;
             
-            CREATE CLUSTERED INDEX IX_SalesAgg_' + @TargetDB + N'_VisitPointCat ON #SalesAgg_' + @TargetDB + N' (VisitDate, PointID, CategoryID);
+            -- Создаем индекс с фиксированным именем для SalesAgg
+            DECLARE @idx_name_salesagg NVARCHAR(256) = 'IX_SalesAgg_' + REPLACE(@TargetDB, '[', '') + REPLACE(']', '') + '_VisitPointCat';
+            DECLARE @create_idx_salesagg NVARCHAR(MAX) = 
+                'CREATE CLUSTERED INDEX ' + QUOTENAME(@idx_name_salesagg) + 
+                ' ON #SalesAgg_' + @TargetDB + N' (VisitDate, PointID, CategoryID);';
+            EXEC sp_executesql @create_idx_salesagg;
 
             -- 6. Строим полную матрицу: все визиты × все категории
             -- И соединяем с продажами (LEFT JOIN) и атрибутами точек
@@ -361,7 +386,7 @@ BEGIN
         
         -- Закрываем курсоры если они существуют и открыты
         BEGIN TRY
-            IF CURSOR_STATUS('local', 'year_cursor') > 0
+            IF CURSOR_STATUS('global', 'year_cursor') > 0
             BEGIN
                 CLOSE year_cursor;
                 DEALLOCATE year_cursor;
@@ -372,7 +397,7 @@ BEGIN
         END CATCH
         
         BEGIN TRY
-            IF CURSOR_STATUS('local', 'db_cursor') > 0
+            IF CURSOR_STATUS('global', 'db_cursor') > 0
             BEGIN
                 CLOSE db_cursor;
                 DEALLOCATE db_cursor;
