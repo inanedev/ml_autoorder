@@ -1,1 +1,72 @@
-Nothing should be ignored based on the provided file changes. The only modified file is 'SNS_ML_Get_Raw_Data.sql', which is a source code file and should not be added to .gitignore.
+```
+# SQL-related build artifacts and temporary files
+*.tmp
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Python artifacts (if any Python files exist in project)
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+
+# Coverage reports
+coverage/
+htmlcov/
+.coverage
+
+# Virtual environments
+venv/
+.venv/
+env/
+.ENV
+
+# Dependency directories
+node_modules/
+.mypy_cache/
+.pytest_cache/
+.tox/
+.hypothesis/
+
+# Build outputs
+dist/
+build/
+target/
+*.egg-info/
+
+# Compression and archives
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+```
