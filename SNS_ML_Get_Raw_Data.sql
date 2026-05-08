@@ -286,17 +286,24 @@ BEGIN
             -- 5. Агрегируем продажи по дням, точкам и категориям
             INSERT INTO #SalesAgg (VisitDate, PointID, CategoryID, SumRoubles)
             SELECT 
-                CAST(o.orDate AS DATE) AS VisitDate, 
-                o.mfID AS PointID, 
-                m.CategoryID,
-                SUM(ISNULL(oi.SumRoubles, 0)) AS SumRoubles
-            FROM ' + @TablePrefix + N'DS_Orders o 
-            INNER JOIN ' + @TablePrefix + N'DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
-            INNER JOIN #ItemMap m ON CAST(oi.iID AS INT) = m.iid
-            WHERE o.orType = 1 
-              AND CAST(o.orDate AS DATE) >= @StartDateParam
-              AND CAST(o.orDate AS DATE) < @EndDateParam
-            GROUP BY CAST(o.orDate AS DATE), o.mfID, m.CategoryID;
+                VisitDate, 
+                PointID, 
+                CategoryID,
+                SUM(SumRoubles) AS SumRoubles
+            FROM (
+                SELECT 
+                    CAST(o.orDate AS DATE) AS VisitDate, 
+                    o.mfID AS PointID, 
+                    m.CategoryID AS CategoryID,
+                    ISNULL(oi.SumRoubles, 0) AS SumRoubles
+                FROM ' + @TablePrefix + N'DS_Orders o 
+                INNER JOIN ' + @TablePrefix + N'DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
+                INNER JOIN #ItemMap m ON CAST(oi.iID AS INT) = m.iid
+                WHERE o.orType = 1 
+                  AND CAST(o.orDate AS DATE) >= @StartDateParam
+                  AND CAST(o.orDate AS DATE) < @EndDateParam
+            ) AS SubQuery
+            GROUP BY VisitDate, PointID, CategoryID;
 
             -- 6. Строим полную матрицу: все визиты × все категории
             -- И соединяем с продажами (LEFT JOIN) и атрибутами точек
