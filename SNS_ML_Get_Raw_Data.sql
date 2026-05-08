@@ -163,6 +163,47 @@ BEGIN
             SumRoubles DECIMAL(18,2)
         );
         
+        -- Создаем общие временные таблицы для сбора данных из всех БД
+        IF OBJECT_ID('tempdb..#CategoryMatrix') IS NOT NULL DROP TABLE #CategoryMatrix;
+        CREATE TABLE #CategoryMatrix (
+            CategoryID INT
+        );
+        
+        IF OBJECT_ID('tempdb..#ItemMap') IS NOT NULL DROP TABLE #ItemMap;
+        CREATE TABLE #ItemMap (
+            iid INT,
+            CategoryID INT,
+            SourceDB NVARCHAR(128)
+        );
+        
+        IF OBJECT_ID('tempdb..#PointFeatures') IS NOT NULL DROP TABLE #PointFeatures;
+        CREATE TABLE #PointFeatures (
+            PointID INT,
+            BranchID INT,
+            Lat FLOAT,
+            Lon FLOAT,
+            PointClass NVARCHAR(255),
+            PointType NVARCHAR(255),
+            MicroRegionID NVARCHAR(50),
+            SourceDB NVARCHAR(128)
+        );
+        
+        IF OBJECT_ID('tempdb..#AllVisits') IS NOT NULL DROP TABLE #AllVisits;
+        CREATE TABLE #AllVisits (
+            VisitDate DATE,
+            PointID INT,
+            SourceDB NVARCHAR(128)
+        );
+        
+        IF OBJECT_ID('tempdb..#SalesAgg') IS NOT NULL DROP TABLE #SalesAgg;
+        CREATE TABLE #SalesAgg (
+            VisitDate DATE,
+            PointID INT,
+            CategoryID INT,
+            SumRoubles DECIMAL(18,2),
+            SourceDB NVARCHAR(128)
+        );
+        
         -- Переменная для динамического SQL и имени БД
         DECLARE @TargetDB NVARCHAR(128);
         DECLARE @DynamicSQL NVARCHAR(MAX);
@@ -185,13 +226,12 @@ BEGIN
                 SET @TablePrefix = N'[' + @TargetDB + N'].dbo.';
             
             SET @DynamicSQL = N'
-            -- Временные таблицы для каждой БД
+            -- Временные таблицы для каждой БД - используем общие временные таблицы
             
             -- 1. Формируем матрицу всех категорий, которые продавались за последние 3 месяца
-            IF OBJECT_ID(''tempdb..#CategoryMatrix_' + @TargetDB + N''') IS NOT NULL DROP TABLE #CategoryMatrix_' + @TargetDB + N';
+            INSERT INTO #CategoryMatrix (CategoryID)
             SELECT DISTINCT 
                 CAST(i.itID AS INT) AS CategoryID
-            INTO #CategoryMatrix_' + @TargetDB + N' 
             FROM ' + @TablePrefix + N'DS_ITEMS i 
             INNER JOIN ' + @TablePrefix + N'DS_Orders_Items oi ON CAST(i.iid AS INT) = CAST(oi.iID AS INT)
             INNER JOIN ' + @TablePrefix + N'DS_Orders o ON oi.MasterFID = o.MasterFID AND oi.orID = o.orID
@@ -201,31 +241,17 @@ BEGIN
               AND CAST(o.orDate AS DATE) >= ''' + CONVERT(NVARCHAR(10), @CategoryMatrixStart, 120) + N'''
               AND CAST(o.orDate AS DATE) < ''' + CONVERT(NVARCHAR(10), @EndDate, 120) + N''';
             
-            -- Создаем индекс с фиксированным именем для CategoryMatrix
-            DECLARE @idx_name_catmatrix NVARCHAR(256) = 'IX_CategoryMatrix_' + REPLACE(@TargetDB, '[', '') + REPLACE(']', '') + '_CategoryID';
-            DECLARE @create_idx_catmatrix NVARCHAR(MAX) = 
-                'CREATE CLUSTERED INDEX ' + QUOTENAME(@idx_name_catmatrix) + 
-                ' ON #CategoryMatrix_' + @TargetDB + N' (CategoryID);';
-            EXEC sp_executesql @create_idx_catmatrix;
-            
             -- 2. Справочник активных SKU с категориями
-            IF OBJECT_ID(''tempdb..#ItemMap_' + @TargetDB + N''') IS NOT NULL DROP TABLE #ItemMap_' + @TargetDB + N';
+            INSERT INTO #ItemMap (iid, CategoryID, SourceDB)
             SELECT 
                 CAST(i.iid AS INT) as iid, 
-                CAST(i.itID AS INT) AS CategoryID
-            INTO #ItemMap_' + @TargetDB + N' 
+                CAST(i.itID AS INT) AS CategoryID,
+                ''' + @TargetDB + N''' AS SourceDB
             FROM ' + @TablePrefix + N'DS_ITEMS i 
             WHERE i.activeFlag = 1 AND i.itID IS NOT NULL;
-            
-            -- Создаем индекс с фиксированным именем для ItemMap
-            DECLARE @idx_name_itemmap NVARCHAR(256) = 'IX_ItemMap_' + REPLACE(@TargetDB, '[', '') + REPLACE(']', '') + '_iid';
-            DECLARE @create_idx_itemmap NVARCHAR(MAX) = 
-                'CREATE CLUSTERED INDEX ' + QUOTENAME(@idx_name_itemmap) + 
-                ' ON #ItemMap_' + @TargetDB + N' (iid);';
-            EXEC sp_executesql @create_idx_itemmap;
 
             -- 3. Признаки точек продаж с координатами
-            IF OBJECT_ID(''tempdb..#PointFeatures_' + @TargetDB + N''') IS NOT NULL DROP TABLE #PointFeatures_' + @TargetDB + N';
+            INSERT INTO #PointFeatures (PointID, BranchID, Lat, Lon, PointClass, PointType, MicroRegionID, SourceDB)
             SELECT 
                 f.fid AS PointID, 
                 f.distid AS BranchID, 
@@ -246,61 +272,39 @@ BEGIN
                 CAST(
                     FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' 
                     AS VARCHAR(20)
-                ) AS MicroRegionID
-
-            INTO #PointFeatures_' + @TargetDB + N' 
+                ) AS MicroRegionID,
+                ''' + @TargetDB + N''' AS SourceDB
             FROM ' + @TablePrefix + N'ds_faces f 
             LEFT JOIN ' + @TablePrefix + N'ds_facesattributes fa ON f.fid = fa.fid AND fa.activeflag = 1 
             WHERE f.ftype = 1 AND f.factiveflag = 1 
             GROUP BY f.fid, f.distid;
 
-            -- Создаем индекс с фиксированным именем для PointFeatures
-            DECLARE @idx_name_pf NVARCHAR(256) = 'IX_PF_' + REPLACE(@TargetDB, '[', '') + REPLACE(']', '') + '_PointID';
-            DECLARE @create_idx_pf NVARCHAR(MAX) = 
-                'CREATE CLUSTERED INDEX ' + QUOTENAME(@idx_name_pf) + 
-                ' ON #PointFeatures_' + @TargetDB + N' (PointID);';
-            EXEC sp_executesql @create_idx_pf;
-
             -- 4. Извлекаем все визиты из DS_merPointsVisits
-            IF OBJECT_ID(''tempdb..#AllVisits_' + @TargetDB + N''') IS NOT NULL DROP TABLE #AllVisits_' + @TargetDB + N';
+            INSERT INTO #AllVisits (VisitDate, PointID, SourceDB)
             SELECT 
                 CAST(mpv.vdate AS DATE) AS VisitDate,
-                CAST(mpv.fid AS INT) AS PointID
-            INTO #AllVisits_' + @TargetDB + N'
+                CAST(mpv.fid AS INT) AS PointID,
+                ''' + @TargetDB + N''' AS SourceDB
             FROM ' + @TablePrefix + N'DS_merPointsVisits mpv
             WHERE CAST(mpv.vdate AS DATE) >= @StartDateParam
               AND CAST(mpv.vdate AS DATE) < @EndDateParam
             GROUP BY CAST(mpv.vdate AS DATE), CAST(mpv.fid AS INT);
-            
-            -- Создаем индекс с фиксированным именем (временные таблицы уникальны в сессии)
-            DECLARE @idx_name_allvisits NVARCHAR(256) = 'IX_AllVisits_' + REPLACE(@TargetDB, '[', '') + REPLACE(']', '') + '_VisitPoint';
-            DECLARE @create_idx_allvisits NVARCHAR(MAX) = 
-                'CREATE CLUSTERED INDEX ' + QUOTENAME(@idx_name_allvisits) + 
-                ' ON #AllVisits_' + @TargetDB + N' (VisitDate, PointID);';
-            EXEC sp_executesql @create_idx_allvisits;
 
             -- 5. Агрегируем продажи по дням, точкам и категориям
-            IF OBJECT_ID(''tempdb..#SalesAgg_' + @TargetDB + N''') IS NOT NULL DROP TABLE #SalesAgg_' + @TargetDB + N';
+            INSERT INTO #SalesAgg (VisitDate, PointID, CategoryID, SumRoubles, SourceDB)
             SELECT 
                 CAST(o.orDate AS DATE) AS VisitDate, 
                 o.mfID AS PointID, 
                 m.CategoryID,
-                SUM(ISNULL(oi.SumRoubles, 0)) AS SumRoubles
-            INTO #SalesAgg_' + @TargetDB + N'
+                SUM(ISNULL(oi.SumRoubles, 0)) AS SumRoubles,
+                ''' + @TargetDB + N''' AS SourceDB
             FROM ' + @TablePrefix + N'DS_Orders o 
             INNER JOIN ' + @TablePrefix + N'DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
-            INNER JOIN #ItemMap_' + @TargetDB + N' m ON CAST(oi.iID AS INT) = m.iid 
+            INNER JOIN #ItemMap m ON CAST(oi.iID AS INT) = m.iid AND m.SourceDB = ''' + @TargetDB + N'''
             WHERE o.orType = 1 
               AND o.orDate >= @StartDateParam
               AND o.orDate < @EndDateParam
             GROUP BY CAST(o.orDate AS DATE), o.mfID, m.CategoryID;
-            
-            -- Создаем индекс с фиксированным именем для SalesAgg
-            DECLARE @idx_name_salesagg NVARCHAR(256) = 'IX_SalesAgg_' + REPLACE(@TargetDB, '[', '') + REPLACE(']', '') + '_VisitPointCat';
-            DECLARE @create_idx_salesagg NVARCHAR(MAX) = 
-                'CREATE CLUSTERED INDEX ' + QUOTENAME(@idx_name_salesagg) + 
-                ' ON #SalesAgg_' + @TargetDB + N' (VisitDate, PointID, CategoryID);';
-            EXEC sp_executesql @create_idx_salesagg;
 
             -- 6. Строим полную матрицу: все визиты × все категории
             -- И соединяем с продажами (LEFT JOIN) и атрибутами точек
@@ -316,20 +320,14 @@ BEGIN
                 pf.Lon,
                 pf.MicroRegionID,
                 ISNULL(sa.SumRoubles, 0) AS SumRoubles
-            FROM #AllVisits_' + @TargetDB + N' av
-            CROSS JOIN #CategoryMatrix_' + @TargetDB + N' cm
-            INNER JOIN #PointFeatures_' + @TargetDB + N' pf ON av.PointID = pf.PointID
-            LEFT JOIN #SalesAgg_' + @TargetDB + N' sa 
+            FROM #AllVisits av
+            CROSS JOIN #CategoryMatrix cm
+            INNER JOIN #PointFeatures pf ON av.PointID = pf.PointID AND pf.SourceDB = ''' + @TargetDB + N'''
+            LEFT JOIN #SalesAgg sa 
                 ON av.VisitDate = sa.VisitDate 
                 AND av.PointID = sa.PointID 
-                AND cm.CategoryID = sa.CategoryID;
-
-            -- Очистка временных таблиц для этой БД
-            DROP TABLE #CategoryMatrix_' + @TargetDB + N';
-            DROP TABLE #ItemMap_' + @TargetDB + N';
-            DROP TABLE #PointFeatures_' + @TargetDB + N';
-            DROP TABLE #AllVisits_' + @TargetDB + N';
-            DROP TABLE #SalesAgg_' + @TargetDB + N';
+                AND cm.CategoryID = sa.CategoryID
+                AND sa.SourceDB = ''' + @TargetDB + N''';
             ';
             
             EXEC sp_executesql @DynamicSQL, 
@@ -343,6 +341,13 @@ BEGIN
         DEALLOCATE db_cursor;
         
         DROP TABLE #TargetDatabases;
+        
+        -- Очищаем общие временные таблицы
+        DROP TABLE #CategoryMatrix;
+        DROP TABLE #ItemMap;
+        DROP TABLE #PointFeatures;
+        DROP TABLE #AllVisits;
+        DROP TABLE #SalesAgg;
         
         -- Возвращаем итоговый результат
         SELECT 
