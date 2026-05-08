@@ -294,8 +294,8 @@ BEGIN
             INNER JOIN ' + @TablePrefix + N'DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
             INNER JOIN #ItemMap m ON CAST(oi.iID AS INT) = m.iid
             WHERE o.orType = 1 
-              AND o.orDate >= @StartDateParam
-              AND o.orDate < @EndDateParam
+              AND CAST(o.orDate AS DATE) >= @StartDateParam
+              AND CAST(o.orDate AS DATE) < @EndDateParam
             GROUP BY CAST(o.orDate AS DATE), o.mfID, m.CategoryID;
 
             -- 6. Строим полную матрицу: все визиты × все категории
