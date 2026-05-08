@@ -108,7 +108,7 @@ BEGIN
             DECLARE @ArchiveDBName NVARCHAR(128);
             DECLARE @YearToCheck INT;
             
-            DECLARE year_cursor CURSOR LOCAL FAST_FORWARD FOR 
+            DECLARE year_cursor CURSOR FAST_FORWARD FOR 
             SELECT YearToCheck FROM #YearsToCheck;
             
             OPEN year_cursor;
@@ -168,7 +168,7 @@ BEGIN
         DECLARE @DynamicSQL NVARCHAR(MAX);
         
         -- Курсор для перебора всех целевых баз данных
-        DECLARE db_cursor CURSOR LOCAL FAST_FORWARD FOR 
+        DECLARE db_cursor CURSOR FAST_FORWARD FOR 
         SELECT DatabaseName FROM #TargetDatabases;
         
         OPEN db_cursor;
@@ -221,8 +221,8 @@ BEGIN
                 f.distid AS BranchID, 
                 
                 -- Координаты (приводим к float)
-                ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN TRY_CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) AS Lat,
-                ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN TRY_CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) AS Lon,
+                ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) AS Lat,
+                ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) AS Lon,
                 
                 -- Атрибуты
                 ISNULL(MAX(CASE WHEN fa.attrid = 602 THEN fa.attrtext END), ''Unknown'') AS PointClass,
@@ -230,11 +230,11 @@ BEGIN
                 
                 -- Расчет MicroRegionID (Сетка 3x3 км)
                 CAST(
-                    FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN TRY_CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' 
+                    FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' 
                     AS VARCHAR(20)
                 ) + ''_'' + 
                 CAST(
-                    FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN TRY_CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' 
+                    FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' 
                     AS VARCHAR(20)
                 ) AS MicroRegionID
 
@@ -345,32 +345,42 @@ BEGIN
         DECLARE @ErrorLine INT = ERROR_LINE();
         
         -- Логирование ошибки
-        PRINT ''Ошибка в процедуре SNS_ML_Get_Raw_Data:'';
-        PRINT ''Сообщение: '' + @ErrorMessage;
-        PRINT ''Строка: '' + CAST(@ErrorLine AS NVARCHAR(10));
+        PRINT 'Ошибка в процедуре SNS_ML_Get_Raw_Data:';
+        PRINT 'Сообщение: ' + @ErrorMessage;
+        PRINT 'Строка: ' + CAST(@ErrorLine AS NVARCHAR(10));
         
         -- Очистка временных таблиц если они существуют
-        IF OBJECT_ID(''tempdb..#ItemMap'') IS NOT NULL DROP TABLE #ItemMap;
-        IF OBJECT_ID(''tempdb..#PointFeatures'') IS NOT NULL DROP TABLE #PointFeatures;
-        IF OBJECT_ID(''tempdb..#TargetDatabases'') IS NOT NULL DROP TABLE #TargetDatabases;
-        IF OBJECT_ID(''tempdb..#YearsToCheck'') IS NOT NULL DROP TABLE #YearsToCheck;
-        IF OBJECT_ID(''tempdb..#RawDataResult'') IS NOT NULL DROP TABLE #RawDataResult;
-        IF OBJECT_ID(''tempdb..#CategoryMatrix'') IS NOT NULL DROP TABLE #CategoryMatrix;
-        IF OBJECT_ID(''tempdb..#AllVisits'') IS NOT NULL DROP TABLE #AllVisits;
-        IF OBJECT_ID(''tempdb..#SalesAgg'') IS NOT NULL DROP TABLE #SalesAgg;
+        IF OBJECT_ID('tempdb..#ItemMap') IS NOT NULL DROP TABLE #ItemMap;
+        IF OBJECT_ID('tempdb..#PointFeatures') IS NOT NULL DROP TABLE #PointFeatures;
+        IF OBJECT_ID('tempdb..#TargetDatabases') IS NOT NULL DROP TABLE #TargetDatabases;
+        IF OBJECT_ID('tempdb..#YearsToCheck') IS NOT NULL DROP TABLE #YearsToCheck;
+        IF OBJECT_ID('tempdb..#RawDataResult') IS NOT NULL DROP TABLE #RawDataResult;
+        IF OBJECT_ID('tempdb..#CategoryMatrix') IS NOT NULL DROP TABLE #CategoryMatrix;
+        IF OBJECT_ID('tempdb..#AllVisits') IS NOT NULL DROP TABLE #AllVisits;
+        IF OBJECT_ID('tempdb..#SalesAgg') IS NOT NULL DROP TABLE #SalesAgg;
         
-        -- Закрываем курсоры если они открыты
-        IF CURSOR_STATUS('local', 'year_cursor') > 0
-        BEGIN
-            CLOSE year_cursor;
-            DEALLOCATE year_cursor;
-        END
+        -- Закрываем курсоры если они существуют и открыты
+        BEGIN TRY
+            IF CURSOR_STATUS('local', 'year_cursor') > 0
+            BEGIN
+                CLOSE year_cursor;
+                DEALLOCATE year_cursor;
+            END
+        END TRY
+        BEGIN CATCH
+            -- Игнорируем ошибки при закрытии курсора
+        END CATCH
         
-        IF CURSOR_STATUS('local', 'db_cursor') > 0
-        BEGIN
-            CLOSE db_cursor;
-            DEALLOCATE db_cursor;
-        END
+        BEGIN TRY
+            IF CURSOR_STATUS('local', 'db_cursor') > 0
+            BEGIN
+                CLOSE db_cursor;
+                DEALLOCATE db_cursor;
+            END
+        END TRY
+        BEGIN CATCH
+            -- Игнорируем ошибки при закрытии курсора
+        END CATCH
         
         -- Проброс ошибки дальше
         RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
