@@ -1,4 +1,1 @@
-```
-# SQL query files typically don't generate artifacts worth ignoring
-# Only source/config files detected, no build artifacts or dependencies found
-```
+Nothing should be ignored in this case, as only a SQL file was modified and no build artifacts, dependencies, or temporary files were detected.
