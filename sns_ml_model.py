@@ -5,7 +5,6 @@ from typing import List, Tuple, Optional, Dict
 import logging
 import os
 from dotenv import load_dotenv
-import math
 
 # Импорт функций из sns_ml_add_features
 from sns_ml_add_features import load_and_add_features
@@ -33,47 +32,6 @@ try:
 except ImportError:
     CATBOOST_AVAILABLE = False
     logger.warning("CatBoost не установлен. Обучение моделей будет недоступно.")
-
-class RMSLE(object):
-    def calc_ders_range(self, approxes, targets, weights):
-        assert len(approxes) == len(targets)
-        if weights is not None:
-            assert len(weights) == len(approxes)
-
-        result = []
-        for index in range(len(targets)):
-            val = max(approxes[index], 0)
-            der1 = math.log1p(targets[index]) - math.log1p(max(0, approxes[index]))
-            der2 = -1 / (max(0, approxes[index]) + 1)
-
-            if weights is not None:
-                der1 *= weights[index]
-                der2 *= weights[index]
-
-            result.append((der1, der2))
-        return result
-class RMSLE_val(object):
-    def get_final_error(self, error, weight):
-        return np.sqrt(error / (weight + 1e-38))
-
-    def is_max_optimal(self):
-        return False
-
-    def evaluate(self, approxes, target, weight):
-        assert len(approxes) == 1
-        assert len(target) == len(approxes[0])
-
-        approx = approxes[0]
-
-        error_sum = 0.0
-        weight_sum = 0.0
-
-        for i in range(len(approx)):
-            w = 1.0 if weight is None else weight[i]
-            weight_sum += w
-            error_sum += w * ((math.log1p(max(0, approx[i])) - math.log1p(max(0, target[i])))**2)
-
-        return error_sum, weight_sum
 
 def prepare_data_for_training(df: pd.DataFrame, 
                                target_col: str = 'SumRoubles',
@@ -164,110 +122,74 @@ def prepare_data_for_training(df: pd.DataFrame,
     return X, y, categorical_features, feature_cols
 
 
-def train_models_per_category(df: pd.DataFrame,
-                               category_col: str = 'CategoryID',
-                               target_col: str = 'SumRoubles',
-                               exclude_cols: Optional[List[str]] = None,
-                               verbose: bool = True) -> Dict:
+def train_single_model(df: pd.DataFrame,
+                       target_col: str = 'SumRoubles',
+                       exclude_cols: Optional[List[str]] = None,
+                       verbose: bool = True) -> Tuple:
     """
-    Обучает отдельную модель CatBoost для каждой категории.
+    Обучает единую модель CatBoost на всех категориях сразу с использованием Tweedie loss.
     
     Args:
         df: Исходный датафрейм с признаками и целевой переменной
-        category_col: Название колонки с категориями (по умолчанию 'CategoryID')
         target_col: Название целевой колонки (по умолчанию 'SumRoubles')
         exclude_cols: Список колонок для исключения из признаков
         verbose: Флаг для вывода подробной информации
         
     Returns:
-        Словарь с обученными моделями и метаданными:
-            - models: dict {category_id: trained_model}
-            - categories: list of category_ids
-            - feature_names: list of feature names used for training
-            - categorical_features: list of categorical feature indices
+        Кортеж (model, feature_names, categorical_features):
+            - model: обученная модель CatBoostRegressor
+            - feature_names: список имен признаков
+            - categorical_features: список индексов категориальных признаков
     """
     if not CATBOOST_AVAILABLE:
         raise ImportError("CatBoost не установлен. Установите его: pip install catboost")
     
-    logger.info("Начало обучения моделей для каждой категории...")
+    logger.info("Начало обучения единой модели на всех категориях...")
     
-    # Проверяем наличие колонки категории
-    if category_col not in df.columns:
-        raise ValueError(f"Колонка '{category_col}' не найдена в датафрейме")
+    # Подготавливаем данные для обучения
+    X, y, cat_features, feat_names = prepare_data_for_training(
+        df, 
+        target_col=target_col,
+        exclude_cols=exclude_cols
+    )
     
-    # Получаем уникальные категории
-    categories = df[category_col].unique()
-    logger.info(f"Найдено {len(categories)} уникальных категорий")
+    # Создаём пулы CatBoost
+    train_pool = Pool(X, y, cat_features=cat_features)
     
-    models = {}
-    feature_names = None
-    categorical_features = None
-    
-    for idx, category in enumerate(categories):
-        logger.info(f"Обучение модели для категории {category} ({idx + 1}/{len(categories)})...")
-        
-        # Фильтруем данные по категории
-        df_category = df[df[category_col] == category].copy()
-        
-        if len(df_category) < 10:
-            logger.warning(f"Пропуск категории {category}: недостаточно данных ({len(df_category)} записей)")
-            continue
-        
-        # Подготавливаем данные для обучения
-        X, y, cat_features, feat_names = prepare_data_for_training(
-            df_category, 
-            target_col=target_col,
-            exclude_cols=exclude_cols
-        )
-        
-        # Сохраняем имена признаков и индексы категориальных признаков (они одинаковы для всех категорий)
-        if feature_names is None:
-            feature_names = feat_names
-            categorical_features = cat_features
-        
-        # Создаём пулы CatBoost
-        train_pool = Pool(X, y, cat_features=cat_features)
-        
-        # Параметры модели CatBoost
-        model_params = {
-            'iterations': 1500,
-            'loss_function': RMSLE(),
-            'eval_metric': RMSLE_val(),
-            'l2_leaf_reg': 1,
-            'learning_rate': 0.03,
-            'depth': 6,
-            'verbose': verbose,
-            'random_seed': 42
-        }
-        
-        # Создаём и обучаем модель
-        model = CatBoostRegressor(**model_params)
-        model.fit(train_pool)
-        
-        models[category] = model
-        logger.info(f"Модель для категории {category} обучена успешно")
-    
-    logger.info(f"Обучено {len(models)} моделей")
-    
-    return {
-        'models': models,
-        'categories': list(models.keys()),
-        'feature_names': feature_names,
-        'categorical_features': categorical_features
+    # Параметры модели CatBoost с Tweedie loss
+    model_params = {
+        'iterations': 1000,
+        'learning_rate': 0.05,
+        'depth': 6,
+        'loss_function': 'Tweedie:tweedie_variance_power=1.5',
+        'eval_metric': 'Tweedie',
+        'random_seed': 42,
+        'verbose': 100 if verbose else 0
     }
+    
+    # Создаём и обучаем модель
+    logger.info("Обучение модели с функцией потерь Tweedie...")
+    model = CatBoostRegressor(**model_params)
+    model.fit(train_pool)
+    
+    logger.info("Модель успешно обучена")
+    
+    return model, feat_names, cat_features
 
 
-def predict_with_category_models(models_dict: Dict, 
-                                  df: pd.DataFrame,
-                                  category_col: str = 'CategoryID',
-                                  exclude_cols: Optional[List[str]] = None) -> pd.Series:
+def predict_with_single_model(model: CatBoostRegressor, 
+                               df: pd.DataFrame,
+                               feature_names: List[str],
+                               categorical_features: List[int],
+                               exclude_cols: Optional[List[str]] = None) -> pd.Series:
     """
-    Делает предсказания используя обученные модели для каждой категории.
+    Делает предсказания используя единую обученную модель.
     
     Args:
-        models_dict: Словарь с результатами train_models_per_category()
+        model: Обученная модель CatBoostRegressor
         df: Датафрейм с данными для предсказания
-        category_col: Название колонки с категориями
+        feature_names: Список имен признаков, использованных при обучении
+        categorical_features: Список индексов категориальных признаков
         exclude_cols: Список колонок для исключения из признаков
         
     Returns:
@@ -276,64 +198,45 @@ def predict_with_category_models(models_dict: Dict,
     if not CATBOOST_AVAILABLE:
         raise ImportError("CatBoost не установлен")
     
-    models = models_dict['models']
-    feature_names = models_dict['feature_names']
-    categorical_features = models_dict['categorical_features']
+    logger.info("Выполнение предсказаний с использованием единой модели...")
     
-    logger.info("Выполнение предсказаний для всех категорий...")
+    # Подготавливаем признаки
+    X = df[feature_names].copy()
     
-    # Создаём серию для предсказаний
-    predictions = pd.Series(index=df.index, dtype=float)
+    # Преобразуем категориальные признаки в строковый тип
+    for idx in categorical_features:
+        col_name = feature_names[idx]
+        X[col_name] = X[col_name].fillna('Unknown').astype(str)
     
-    # Для каждой категории делаем предсказания своей моделью
-    for category, model in models.items():
-        # Фильтруем данные по категории
-        mask = df[category_col] == category
-        df_category = df[mask].copy()
-        
-        if len(df_category) == 0:
-            continue
-        
-        # Подготавливаем признаки
-        X_category = df_category[feature_names].copy()
-        
-        # Преобразуем категориальные признаки в строковый тип
-        for idx in categorical_features:
-            col_name = feature_names[idx]
-            X_category[col_name] = X_category[col_name].fillna('Unknown').astype(str)
-        
-        # Делаем предсказания
-        pred_values = model.predict(X_category)
-        predictions.loc[mask] = pred_values
+    # Делаем предсказания
+    predictions = model.predict(X)
     
     logger.info(f"Предсказания сделаны для {len(predictions)} записей")
     
     return predictions
 
 
-def save_models_per_category(models_dict: Dict, save_dir: str) -> None:
+def save_single_model(model: CatBoostRegressor, feature_names: List[str], 
+                      categorical_features: List[int], save_path: str) -> None:
     """
-    Сохраняет обученные модели для каждой категории в отдельные файлы.
+    Сохраняет единую обученную модель в файл.
     
     Args:
-        models_dict: Словарь с результатами train_models_per_category()
-        save_dir: Директория для сохранения моделей
+        model: Обученная модель CatBoostRegressor
+        feature_names: Список имен признаков
+        categorical_features: Список индексов категориальных признаков
+        save_path: Путь для сохранения модели (.cbm файл)
     """
     if not CATBOOST_AVAILABLE:
         raise ImportError("CatBoost не установлен")
     
-    os.makedirs(save_dir, exist_ok=True)
-    
-    models = models_dict['models']
-    
-    # Сохраняем каждую модель
-    for category, model in models.items():
-        model_path = os.path.join(save_dir, f"model_category_{category}.cbm")
-        model.save_model(model_path)
-        logger.info(f"Модель для категории {category} сохранена в {model_path}")
+    # Сохраняем модель
+    model.save_model(save_path)
+    logger.info(f"Модель сохранена в {save_path}")
     
     # Сохраняем метаданные
-    # Преобразуем numpy типы в стандартные Python типы для JSON сериализации
+    import json
+    
     def convert_to_python_types(obj):
         if isinstance(obj, (np.integer, np.int64)):
             return int(obj)
@@ -349,62 +252,52 @@ def save_models_per_category(models_dict: Dict, save_dir: str) -> None:
             return obj
     
     metadata = {
-        'categories': models_dict['categories'],
-        'feature_names': models_dict['feature_names'],
-        'categorical_features': models_dict['categorical_features']
+        'feature_names': feature_names,
+        'categorical_features': categorical_features
     }
     metadata = convert_to_python_types(metadata)
     
-    metadata_path = os.path.join(save_dir, "model_metadata.json")
-    import json
+    metadata_path = save_path.replace('.cbm', '_metadata.json')
     with open(metadata_path, 'w', encoding='utf-8') as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
-    logger.info(f"Метаданные моделей сохранены в {metadata_path}")
+    logger.info(f"Метаданные модели сохранены в {metadata_path}")
 
 
-def load_models_per_category(load_dir: str) -> Dict:
+def load_single_model(load_path: str) -> Tuple:
     """
-    Загружает обученные модели для каждой категории из файлов.
+    Загружает единую обученную модель из файла.
     
     Args:
-        load_dir: Директория с сохранёнными моделями
+        load_path: Путь к файлу модели (.cbm файл)
         
     Returns:
-        Словарь с загруженными моделями и метаданными
+        Кортеж (model, feature_names, categorical_features)
     """
     if not CATBOOST_AVAILABLE:
         raise ImportError("CatBoost не установлен")
     
     import json
     
+    # Загружаем модель
+    model = CatBoostRegressor()
+    model.load_model(load_path)
+    logger.info(f"Модель загружена из {load_path}")
+    
     # Загружаем метаданные
-    metadata_path = os.path.join(load_dir, "model_metadata.json")
+    metadata_path = load_path.replace('.cbm', '_metadata.json')
     with open(metadata_path, 'r', encoding='utf-8') as f:
         metadata = json.load(f)
     
-    models = {}
-    for category in metadata['categories']:
-        model_path = os.path.join(load_dir, f"model_category_{category}.cbm")
-        model = CatBoostRegressor()
-        model.load_model(model_path)
-        models[category] = model
-        logger.info(f"Модель для категории {category} загружена из {model_path}")
-    
-    return {
-        'models': models,
-        'categories': metadata['categories'],
-        'feature_names': metadata['feature_names'],
-        'categorical_features': metadata['categorical_features']
-    }
+    return model, metadata['feature_names'], metadata['categorical_features']
 
 
-def run_full_pipeline(models_save_dir: str = 'category_models'):
+def run_full_pipeline(model_save_path: str = 'catboost_model_single.cbm'):
     """
-    Запускает полный пайплайн ML: обучение моделей, сохранение, загрузка тестовых данных,
+    Запускает полный пайплайн ML: обучение единой модели, сохранение, загрузка тестовых данных,
     предсказание и сохранение результатов в таблицу SNS_ML_Predictions.
     
     Args:
-        models_save_dir: Директория для сохранения обученных моделей
+        model_save_path: Путь для сохранения обученной модели (.cbm файл)
     """
     logger.info("=" * 60)
     logger.info("Запуск полного ML пайплайна")
@@ -419,21 +312,20 @@ def run_full_pipeline(models_save_dir: str = 'category_models'):
     df_train = load_and_add_features(start_date, end_date)
     logger.info(f"Загружено {len(df_train)} записей для обучения")
     
-    # Шаг 2: Обучаем модели для каждой категории
-    logger.info("Шаг 2: Обучение моделей для каждой категории...")
-    models_result = train_models_per_category(
+    # Шаг 2: Обучаем единую модель на всех категориях
+    logger.info("Шаг 2: Обучение единой модели на всех категориях...")
+    model, feature_names, categorical_features = train_single_model(
         df_train,
-        category_col='CategoryID',
         target_col='SumRoubles',
         exclude_cols=['VisitDate'],
-        verbose=False
+        verbose=True
     )
-    logger.info(f"Обучено {len(models_result['categories'])} моделей")
+    logger.info("Модель успешно обучена")
     
-    # Шаг 3: Сохраняем модели
-    logger.info("Шаг 3: Сохранение обученных моделей...")
-    save_models_per_category(models_result, models_save_dir)
-    logger.info(f"Модели сохранены в директорию {models_save_dir}")
+    # Шаг 3: Сохраняем модель
+    logger.info("Шаг 3: Сохранение обученной модели...")
+    save_single_model(model, feature_names, categorical_features, model_save_path)
+    logger.info(f"Модель сохранена в {model_save_path}")
     
     # Шаг 4: Загружаем тестовые данные на сегодняшний день
     logger.info("Шаг 4: Загрузка тестовых данных для предсказания...")
@@ -444,12 +336,13 @@ def run_full_pipeline(models_save_dir: str = 'category_models'):
     logger.info("Шаг 5: Проверка и очистка таблицы SNS_ML_Predictions...")
     check_and_cleanup_predictions_table(today, table_name='SNS_ML_Predictions')
     
-    # Шаг 6: Делаем предсказания по каждой категории
+    # Шаг 6: Делаем предсказания с использованием единой модели
     logger.info("Шаг 6: Выполнение предсказаний...")
-    predictions = predict_with_category_models(
-        models_result,
+    predictions = predict_with_single_model(
+        model,
         test_df,
-        category_col='CategoryID',
+        feature_names,
+        categorical_features,
         exclude_cols=['VisitDate']
     )
     
