@@ -7,6 +7,7 @@ from sns_ml_fetch_data import fetch_raw_data, get_connection
 import pyodbc
 import os
 from dotenv import load_dotenv
+import holidays
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 def get_russia_holidays(year: int) -> List[date]:
     """
     Возвращает список национальных праздников России для указанного года.
-    Учитывает переходящие праздники и переносы выходных дней.
+    Использует библиотеку holidays для получения точных дат с учётом переносов выходных.
     
     Args:
         year: Год, для которого нужно получить праздники
@@ -30,66 +31,14 @@ def get_russia_holidays(year: int) -> List[date]:
     Returns:
         Список дат праздников
     """
-    holidays = []
-    
-    # Фиксированные праздничные даты (ст. 112 ТК РФ)
-    fixed_holidays = [
-        (1, 1),   # Новый год
-        (1, 2),   # Новогодние каникулы
-        (1, 3),   # Новогодние каникулы
-        (1, 4),   # Новогодние каникулы
-        (1, 5),   # Новогодние каникулы
-        (1, 6),   # Новогодние каникулы
-        (1, 7),   # Рождество Христово
-        (1, 8),   # Новогодние каникулы
-        (2, 23),  # День защитника Отечества
-        (3, 8),   # Международный женский день
-        (5, 1),   # Праздник Весны и Труда
-        (5, 9),   # День Победы
-        (6, 12),  # День России
-        (11, 4),  # День народного единства
-    ]
-    
-    # Добавляем фиксированные праздники
-    for month, day in fixed_holidays:
-        try:
-            holidays.append(date(year, month, day))
-        except ValueError:
-            pass  # Пропускаем невалидные даты (например, 30 февраля)
-    
-    # Пасха (переходящий праздник, но не является официальным выходным в РФ)
-    # Вычисляем дату Пасхи по алгоритму Гаусса
-    def calculate_orthodox_easter(year: int) -> date:
-        a = year % 19
-        b = year % 4
-        c = year % 7
-        k = year // 100
-        p = (8 * k + 13) // 25
-        q = k // 4
-        m = (15 - p + 32 * q - a + 19 * b) % 30
-        n = (4 * k + m - b - c + 2) % 7
-        d = m + n
-        if d <= 9:
-            return date(year, 4, d + 22)
-        else:
-            return date(year, 5, d - 9)
-    
-    # Пасха не является государственным праздником в РФ, но многие её отмечают
-    # Не добавляем её в список официальных праздников
-    
-    # Дополнительные выходные из-за переноса (приблизительный расчет)
-    # Точные даты переноса утверждаются правительством ежегодно
-    # Для простоты добавляем типичные переносы
-    
-    # Проверяем дни недели для фиксированных праздников и добавляем переносы
-    # Это упрощенная логика, точные даты нужно уточнять каждый год
-    
-    return sorted(set(holidays))
+    ru_holidays = holidays.Russia(years=year)
+    return sorted(list(ru_holidays.keys()))
 
 
 def get_extended_russia_holidays(start_year: int, end_year: int) -> List[date]:
     """
     Возвращает расширенный список праздников России за период лет.
+    Использует библиотеку holidays для получения точных дат с учётом переносов выходных.
     
     Args:
         start_year: Начальный год
@@ -98,10 +47,8 @@ def get_extended_russia_holidays(start_year: int, end_year: int) -> List[date]:
     Returns:
         Отсортированный список дат всех праздников
     """
-    all_holidays = []
-    for year in range(start_year, end_year + 1):
-        all_holidays.extend(get_russia_holidays(year))
-    return sorted(set(all_holidays))
+    ru_holidays = holidays.Russia(years=range(start_year, end_year + 1))
+    return sorted(list(ru_holidays.keys()))
 
 
 def find_nearest_holidays(target_date: date, holidays: List[date]) -> Tuple[Optional[date], Optional[date]]:
@@ -331,6 +278,9 @@ def add_visit_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate', poin
        Если определить не удалось (первое посещение), то = 7
     2. DaysNextVisit - количество дней до следующего VisitDate для PointID. 
        Если определить не удалось (последнее посещение), то = 7
+    3. isHolidayNextVisit - признак того, что следующий визит попадет на праздничный 
+       или выходной день (суббота/воскресенье). 1 - если праздник/выходной, 0 - иначе.
+       Для последнего посещения расчет ведется от даты визита + 7 дней (по умолчанию DaysNextVisit)
     
     Расчет ведется по уникальным датам для каждой точки, чтобы корректно обрабатывать
     случаи, когда для одной точки есть несколько записей с одинаковым VisitDate.
@@ -370,14 +320,45 @@ def add_visit_features(df: pd.DataFrame, visit_date_col: str = 'VisitDate', poin
     unique_visits['DaysLastVisit'] = unique_visits['DaysLastVisit'].fillna(7).astype(int)
     unique_visits['DaysNextVisit'] = unique_visits['DaysNextVisit'].fillna(7).astype(int)
     
+    # 3. isHolidayNextVisit - проверяем, попадает ли следующий визит на праздник или выходной
+    # Определяем диапазон лет для загрузки праздников
+    min_year = unique_visits[visit_date_col].min().year - 1 if pd.notna(unique_visits[visit_date_col].min()) else datetime.now().year - 1
+    max_year = unique_visits[visit_date_col].max().year + 1 if pd.notna(unique_visits[visit_date_col].max()) else datetime.now().year + 1
+    
+    # Загружаем праздники для расширенного диапазона
+    ru_holidays = holidays.Russia(years=range(min_year, max_year + 1))
+    holidays_set = set(ru_holidays.keys())
+    
+    def check_next_visit_holiday(row):
+        """Проверяет, попадает ли следующий визит на праздник или выходной"""
+        current_date = row[visit_date_col]
+        days_next = row['DaysNextVisit']
+        
+        if pd.isna(current_date) or pd.isna(days_next):
+            return 0
+        
+        # Вычисляем дату следующего визита
+        next_visit_date = current_date + timedelta(days=days_next)
+        next_visit_date_only = next_visit_date.date() if hasattr(next_visit_date, 'date') else next_visit_date
+        
+        # Проверяем: праздник ИЛИ суббота (5) ИЛИ воскресенье (6)
+        # weekday(): понедельник=0, ..., суббота=5, воскресенье=6
+        is_weekend = next_visit_date.weekday() >= 5  # 5=суббота, 6=воскресенье
+        is_holiday = next_visit_date_only in holidays_set
+        
+        return 1 if (is_weekend or is_holiday) else 0
+    
+    # Применяем проверку для всех строк, включая последние визиты (где DaysNextVisit=7)
+    unique_visits['isHolidayNextVisit'] = unique_visits.apply(check_next_visit_holiday, axis=1)
+    
     # Удаляем вспомогательные колонки
     unique_visits = unique_visits.drop(columns=['PrevVisitDate', 'NextVisitDate'])
     
     # Merge с исходным датафреймом для присваивания значений всем строкам
     result_df = result_df.merge(unique_visits, on=[point_id_col, visit_date_col], how='left')
     
-    logger.info(f"Успешно добавлено 2 признака посещений")
-    logger.info(f"Новые колонки: ['DaysLastVisit', 'DaysNextVisit']")
+    logger.info(f"Успешно добавлено 3 признака посещений")
+    logger.info(f"Новые колонки: ['DaysLastVisit', 'DaysNextVisit', 'isHolidayNextVisit']")
     
     return result_df
 
