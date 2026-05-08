@@ -75,7 +75,7 @@ BEGIN
         
         -- Находим минимальную дату в текущей базе данных
         DECLARE @MinDateInCurrentDB DATE;
-        SELECT @MinDateInCurrentDB = MIN(CAST(orDate AS DATE)) FROM DS_Orders WHERE orType = 1;
+        SELECT @MinDateInCurrentDB = MIN(CAST(orDate AS DATE)) FROM dbo.DS_Orders WHERE orType = 1;
         
         -- Таблица для хранения имен баз данных для запроса
         IF OBJECT_ID('tempdb..#TargetDatabases') IS NOT NULL DROP TABLE #TargetDatabases;
