@@ -65,13 +65,16 @@ BEGIN
         END
 
         -- Шаг сетки для 3 км: 3 / 111.0 ≈ 0.027 градуса
-        DECLARE @GridStep FLOAT = 0.027; 
+        DECLARE @GridStep FLOAT;
+        SET @GridStep = 0.027;
         
         -- Расчет периода для матрицы категорий (последние 3 месяца до @StartDate)
-        DECLARE @CategoryMatrixStart DATE = DATEADD(MONTH, -3, @StartDate);
+        DECLARE @CategoryMatrixStart DATE;
+        SET @CategoryMatrixStart = DATEADD(MONTH, -3, @StartDate);
         
         -- Получаем имя текущей базы данных
-        DECLARE @CurrentDBName NVARCHAR(128) = DB_NAME();
+        DECLARE @CurrentDBName NVARCHAR(128);
+        SET @CurrentDBName = DB_NAME();
         
         -- Находим минимальную дату в текущей базе данных
         DECLARE @MinDateInCurrentDB DATE;
@@ -88,16 +91,20 @@ BEGIN
         IF @CategoryMatrixStart < @MinDateInCurrentDB OR @MinDateInCurrentDB IS NULL
         BEGIN
             -- Определяем диапазон годов для проверки
-            DECLARE @StartYear INT = YEAR(@CategoryMatrixStart);
-            DECLARE @EndYear INT = YEAR(@EndDate);
-            DECLARE @CurrentYear INT = YEAR(GETDATE());
+            DECLARE @StartYear INT;
+            DECLARE @EndYear INT;
+            DECLARE @CurrentYear INT;
+            SET @StartYear = YEAR(@CategoryMatrixStart);
+            SET @EndYear = YEAR(@EndDate);
+            SET @CurrentYear = YEAR(GETDATE());
             
             -- Создаем таблицу для перебора годов
             IF OBJECT_ID('tempdb..#YearsToCheck') IS NOT NULL DROP TABLE #YearsToCheck;
             CREATE TABLE #YearsToCheck (YearToCheck INT);
             
             -- Заполняем года от StartYear до EndYear (но не больше текущего)
-            DECLARE @YearCounter INT = @StartYear;
+            DECLARE @YearCounter INT;
+            SET @YearCounter = @StartYear;
             WHILE @YearCounter <= @EndYear AND @YearCounter < @CurrentYear
             BEGIN
                 INSERT INTO #YearsToCheck (YearToCheck) VALUES (@YearCounter);
@@ -360,10 +367,14 @@ BEGIN
     END TRY
     BEGIN CATCH
         -- Обработка ошибок
-        DECLARE @ErrorMessage NVARCHAR(4000) = ERROR_MESSAGE();
-        DECLARE @ErrorSeverity INT = ERROR_SEVERITY();
-        DECLARE @ErrorState INT = ERROR_STATE();
-        DECLARE @ErrorLine INT = ERROR_LINE();
+        DECLARE @ErrorMessage NVARCHAR(4000);
+        DECLARE @ErrorSeverity INT;
+        DECLARE @ErrorState INT;
+        DECLARE @ErrorLine INT;
+        SET @ErrorMessage = ERROR_MESSAGE();
+        SET @ErrorSeverity = ERROR_SEVERITY();
+        SET @ErrorState = ERROR_STATE();
+        SET @ErrorLine = ERROR_LINE();
         
         -- Логирование ошибки
         PRINT 'Ошибка в процедуре SNS_ML_Get_Raw_Data:';
