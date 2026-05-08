@@ -758,10 +758,17 @@ class OrderRecommender:
         # Расчет raw потребности
         df['raw_need'] = df['avg_sales'] * days_until_visit
         
+        # ГАРАНТИРОВАННЫЙ МИНИМУМ: Если точка никогда не покупала бренд (avg_sales = 0),
+        # но бренд имеет стратегическую важность, устанавливаем минимальную потребность = 1 квант
+        # Это позволяет предлагать новинки и расширять ассортимент в точках без истории покупок
+        df['has_sales_history'] = df['avg_sales'] > 0
+        df.loc[~df['has_sales_history'], 'raw_need'] = df.loc[~df['has_sales_history'], 'brandquantum']
+        
         # Округление до кванта (векторизованно)
         # Используем fillna(0) перед astype(int) для обработки NaN значений
         df['recommended_qty'] = np.ceil(df['raw_need'].fillna(0) / df['brandquantum']).astype(int) * df['brandquantum']
-        df.loc[(df['raw_need'].isna()) | (df['raw_need'] <= 0), 'recommended_qty'] = 0
+        # Гарантируем, что бренды без истории продаж получат хотя бы 1 квант
+        df.loc[~df['has_sales_history'], 'recommended_qty'] = df.loc[~df['has_sales_history'], 'brandquantum']
         
         # Расчет стоимости
         df['estimated_cost'] = df['recommended_qty'] * df['avgprice']
@@ -823,8 +830,11 @@ class OrderRecommender:
         """
         parts = []
         
+        # Проверка на отсутствие истории продаж (новый бренд для точки)
+        if not row.get('has_sales_history', True):
+            parts.append("Новый бренд для точки (гарантированный минимум 1 квант)")
         # Базовое пояснение - регулярное пополнение
-        if row.get('recommended_qty', 0) > 0:
+        elif row.get('recommended_qty', 0) > 0:
             parts.append(f"Регулярное пополнение на {days_until_visit} дн (до след визита)")
         
         # Популярность в микрорегионе
