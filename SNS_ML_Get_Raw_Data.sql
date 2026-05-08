@@ -241,8 +241,8 @@ BEGIN
             WHERE i.activeFlag = 1 
               AND i.itID IS NOT NULL
               AND o.[orType] = 1
-              AND CAST(o.[orDate] AS DATE) >= ''' + CONVERT(NVARCHAR(10), @CategoryMatrixStart, 120) + N'''
-              AND CAST(o.[orDate] AS DATE) < ''' + CONVERT(NVARCHAR(10), @EndDate, 120) + N''';
+              AND CAST(o.[orDate] AS DATE) >= @CatStartParam
+              AND CAST(o.[orDate] AS DATE) < @CatEndParam;
             
             -- 2. Справочник активных SKU с категориями
             INSERT INTO #ItemMap (iid, CategoryID)
@@ -329,8 +329,8 @@ BEGIN
             ';
             
             EXEC sp_executesql @DynamicSQL, 
-                N'@StartDateParam DATE, @EndDateParam DATE',
-                @StartDate, @EndDate;
+                N'@StartDateParam DATE, @EndDateParam DATE, @CatStartParam DATE, @CatEndParam DATE',
+                @StartDate, @EndDate, @CategoryMatrixStart, @EndDate;
             
             FETCH NEXT FROM db_cursor INTO @TargetDB;
         END
