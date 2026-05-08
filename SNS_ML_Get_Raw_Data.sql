@@ -360,13 +360,13 @@ BEGIN
         IF OBJECT_ID(''tempdb..#SalesAgg'') IS NOT NULL DROP TABLE #SalesAgg;
         
         -- Закрываем курсоры если они открыты
-        IF CURSOR_STATUS(''local'', ''year_cursor'') >= 0
+        IF CURSOR_STATUS('local', 'year_cursor') > 0
         BEGIN
             CLOSE year_cursor;
             DEALLOCATE year_cursor;
         END
         
-        IF CURSOR_STATUS(''local'', ''db_cursor'') >= 0
+        IF CURSOR_STATUS('local', 'db_cursor') > 0
         BEGIN
             CLOSE db_cursor;
             DEALLOCATE db_cursor;

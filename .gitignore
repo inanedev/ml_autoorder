@@ -1,1 +1,32 @@
-Nothing should be ignored in this case, as only a SQL file was modified and no build artifacts, dependencies, or temporary files were detected in the changes.
+```
+# SQL related temporary files (if any generated during execution)
+*.tmp
+*.temp
+*.log
+
+# Environment specific files
+.env
+.env.local
+.env.*
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Build/distribution directories
+dist/
+build/
+target/
+
+# Python specific (if applicable to SQL project context)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+```
