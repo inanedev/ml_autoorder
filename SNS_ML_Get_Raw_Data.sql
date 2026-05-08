@@ -75,7 +75,7 @@ BEGIN
         
         -- Находим минимальную дату в текущей базе данных
         DECLARE @MinDateInCurrentDB DATE;
-        SELECT @MinDateInCurrentDB = MIN(CAST(orDate AS DATE)) FROM dbo.DS_Orders WHERE orType = 1;
+        SELECT @MinDateInCurrentDB = MIN(CAST(orDate AS DATE)) FROM dbo.DS_Orders WHERE [orType] = 1;
         
         -- Таблица для хранения имен баз данных для запроса
         IF OBJECT_ID('tempdb..#TargetDatabases') IS NOT NULL DROP TABLE #TargetDatabases;
@@ -127,7 +127,7 @@ BEGIN
                     DECLARE @HasData INT;
                     
                     SET @SQL = N'SELECT @Result = COUNT(*) FROM [' + @ArchiveDBName + N'].dbo.DS_Orders 
-                                 WHERE orType = 1 AND CAST(orDate AS DATE) >= @StartParam AND CAST(orDate AS DATE) < @EndParam';
+                                 WHERE [orType] = 1 AND CAST(orDate AS DATE) >= @StartParam AND CAST(orDate AS DATE) < @EndParam';
                     
                     EXEC sp_executesql @SQL, 
                         N'@Result INT OUTPUT, @StartParam DATE, @EndParam DATE',
@@ -233,7 +233,7 @@ BEGIN
             INNER JOIN ' + @TablePrefix + N'DS_Orders o ON oi.MasterFID = o.MasterFID AND oi.orID = o.orID
             WHERE i.activeFlag = 1 
               AND i.itID IS NOT NULL
-              AND o.orType = 1
+              AND o.[orType] = 1
               AND CAST(o.orDate AS DATE) >= ''' + CONVERT(NVARCHAR(10), @CategoryMatrixStart, 120) + N'''
               AND CAST(o.orDate AS DATE) < ''' + CONVERT(NVARCHAR(10), @EndDate, 120) + N''';
             
@@ -299,7 +299,7 @@ BEGIN
                 FROM ' + @TablePrefix + N'DS_Orders o 
                 INNER JOIN ' + @TablePrefix + N'DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
                 INNER JOIN #ItemMap m ON CAST(oi.iID AS INT) = m.iid
-                WHERE o.orType = 1 
+                WHERE o.[orType] = 1 
                   AND CAST(o.orDate AS DATE) >= @StartDateParam
                   AND CAST(o.orDate AS DATE) < @EndDateParam
             ) AS SubQuery
