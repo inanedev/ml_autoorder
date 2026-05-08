@@ -1,9 +1,34 @@
 ```
-# SQL-related build artifacts and temporary files
-*.tmp
-*.log
+# Compiled and build artifacts
+*.pyc
+__pycache__/
+*.o
+*.obj
+*.class
+*.exe
+*.dll
+*.so
+*.a
+*.out
 
-# Environment files
+# Dependencies
+.venv/
+venv/
+node_modules/
+dist/
+build/
+target/
+.mypy_cache/
+.pytest_cache/
+.gradle/
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Environment
 .env
 .env.local
 .env.*
@@ -12,41 +37,16 @@
 .vscode/
 .idea/
 
-# OS generated files
+# System files
 .DS_Store
 Thumbs.db
 
-# Python artifacts (if any Python files exist in project)
-*.pyc
-__pycache__/
-*.pyo
-*.pyd
-
-# Coverage reports
+# Coverage
 coverage/
 htmlcov/
 .coverage
 
-# Virtual environments
-venv/
-.venv/
-env/
-.ENV
-
-# Dependency directories
-node_modules/
-.mypy_cache/
-.pytest_cache/
-.tox/
-.hypothesis/
-
-# Build outputs
-dist/
-build/
-target/
-*.egg-info/
-
-# Compression and archives
+# Compressed files
 *.zip
 *.gz
 *.tar

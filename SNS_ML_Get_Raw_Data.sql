@@ -75,7 +75,7 @@ BEGIN
         
         -- Находим минимальную дату в текущей базе данных
         DECLARE @MinDateInCurrentDB DATE;
-        SELECT @MinDateInCurrentDB = MIN(CAST(orDate AS DATE)) FROM dbo.DS_Orders WHERE [orType] = 1;
+        SELECT @MinDateInCurrentDB = MIN(CAST([orDate] AS DATE)) FROM dbo.DS_Orders WHERE [orType] = 1;
         
         -- Таблица для хранения имен баз данных для запроса
         IF OBJECT_ID('tempdb..#TargetDatabases') IS NOT NULL DROP TABLE #TargetDatabases;
@@ -127,7 +127,7 @@ BEGIN
                     DECLARE @HasData INT;
                     
                     SET @SQL = N'SELECT @Result = COUNT(*) FROM [' + @ArchiveDBName + N'].dbo.DS_Orders 
-                                 WHERE [orType] = 1 AND CAST(orDate AS DATE) >= @StartParam AND CAST(orDate AS DATE) < @EndParam';
+                                 WHERE [orType] = 1 AND CAST([orDate] AS DATE) >= @StartParam AND CAST([orDate] AS DATE) < @EndParam';
                     
                     EXEC sp_executesql @SQL, 
                         N'@Result INT OUTPUT, @StartParam DATE, @EndParam DATE',
@@ -230,12 +230,12 @@ BEGIN
                 CAST(i.itID AS INT) AS CategoryID
             FROM ' + @TablePrefix + N'DS_ITEMS i 
             INNER JOIN ' + @TablePrefix + N'DS_Orders_Items oi ON CAST(i.iid AS INT) = CAST(oi.iID AS INT)
-            INNER JOIN ' + @TablePrefix + N'DS_Orders o ON oi.MasterFID = o.MasterFID AND oi.orID = o.orID
+            INNER JOIN ' + @TablePrefix + N'DS_Orders o ON oi.MasterFID = o.MasterFID AND oi.[orID] = o.[orID]
             WHERE i.activeFlag = 1 
               AND i.itID IS NOT NULL
               AND o.[orType] = 1
-              AND CAST(o.orDate AS DATE) >= ''' + CONVERT(NVARCHAR(10), @CategoryMatrixStart, 120) + N'''
-              AND CAST(o.orDate AS DATE) < ''' + CONVERT(NVARCHAR(10), @EndDate, 120) + N''';
+              AND CAST(o.[orDate] AS DATE) >= ''' + CONVERT(NVARCHAR(10), @CategoryMatrixStart, 120) + N'''
+              AND CAST(o.[orDate] AS DATE) < ''' + CONVERT(NVARCHAR(10), @EndDate, 120) + N''';
             
             -- 2. Справочник активных SKU с категориями
             INSERT INTO #ItemMap (iid, CategoryID)
@@ -260,8 +260,7 @@ BEGIN
                 ISNULL(MAX(CASE WHEN fa.attrid = 555 THEN fa.attrtext END), ''Unknown'') AS PointType,
                 
                 -- Расчет MicroRegionID (Сетка 3x3 км)
-                CAST(FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), CHAR(32), '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' AS VARCHAR(20)) + ''_'' + 
-                CAST(FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), CHAR(32), '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' AS VARCHAR(20)) AS MicroRegionID
+                CAST(FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), CHAR(32), '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' AS VARCHAR(20)) + ''_'' + CAST(FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), CHAR(32), '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' AS VARCHAR(20)) AS MicroRegionID
             FROM ' + @TablePrefix + N'ds_faces f 
             LEFT JOIN ' + @TablePrefix + N'ds_facesattributes fa ON f.fid = fa.fid AND fa.activeflag = 1 
             WHERE f.ftype = 1 AND f.factiveflag = 1 
@@ -286,16 +285,16 @@ BEGIN
                 SUM(SumRoubles) AS SumRoubles
             FROM (
                 SELECT 
-                    CAST(o.orDate AS DATE) AS VisitDate, 
+                    CAST(o.[orDate] AS DATE) AS VisitDate, 
                     o.mfID AS PointID, 
                     m.CategoryID AS CategoryID,
                     ISNULL(oi.SumRoubles, 0) AS SumRoubles
                 FROM ' + @TablePrefix + N'DS_Orders o 
-                INNER JOIN ' + @TablePrefix + N'DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
+                INNER JOIN ' + @TablePrefix + N'DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.[orID] = oi.[orID] 
                 INNER JOIN #ItemMap m ON CAST(oi.iID AS INT) = m.iid
                 WHERE o.[orType] = 1 
-                  AND CAST(o.orDate AS DATE) >= @StartDateParam
-                  AND CAST(o.orDate AS DATE) < @EndDateParam
+                  AND CAST(o.[orDate] AS DATE) >= @StartDateParam
+                  AND CAST(o.[orDate] AS DATE) < @EndDateParam
             ) AS SubQuery
             GROUP BY VisitDate, PointID, CategoryID;
 
