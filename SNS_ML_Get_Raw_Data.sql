@@ -259,15 +259,15 @@ BEGIN
                 f.distid AS BranchID, 
                 
                 -- Координаты (приводим к float)
-                ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), CHAR(32), '''') AS FLOAT) END), 0) AS Lat,
-                ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), CHAR(32), '''') AS FLOAT) END), 0) AS Lon,
+                ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN CAST(REPLACE(REPLACE(fa.attrtext, CHAR(44), CHAR(46)), CHAR(32), '''') AS FLOAT) END), 0) AS Lat,
+                ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN CAST(REPLACE(REPLACE(fa.attrtext, CHAR(44), CHAR(46)), CHAR(32), '''') AS FLOAT) END), 0) AS Lon,
                 
                 -- Атрибуты
                 ISNULL(MAX(CASE WHEN fa.attrid = 602 THEN fa.attrtext END), ''Unknown'') AS PointClass,
                 ISNULL(MAX(CASE WHEN fa.attrid = 555 THEN fa.attrtext END), ''Unknown'') AS PointType,
                 
                 -- Расчет MicroRegionID (Сетка 3x3 км)
-                CAST(FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), CHAR(32), '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS VARCHAR(20)) + N') * ' + CAST(@GridStep AS VARCHAR(20)) + N' AS VARCHAR(20)) + ''_'' + CAST(FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), CHAR(32), '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS VARCHAR(20)) + N') * ' + CAST(@GridStep AS VARCHAR(20)) + N' AS VARCHAR(20)) AS MicroRegionID
+                CAST(FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN CAST(REPLACE(REPLACE(fa.attrtext, CHAR(44), CHAR(46)), CHAR(32), '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS VARCHAR(20)) + N') * ' + CAST(@GridStep AS VARCHAR(20)) + N' AS VARCHAR(20)) + ''_'' + CAST(FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN CAST(REPLACE(REPLACE(fa.attrtext, CHAR(44), CHAR(46)), CHAR(32), '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS VARCHAR(20)) + N') * ' + CAST(@GridStep AS VARCHAR(20)) + N' AS VARCHAR(20)) AS MicroRegionID
             FROM ' + @TablePrefix + N'ds_faces f 
             LEFT JOIN ' + @TablePrefix + N'ds_facesattributes fa ON f.fid = fa.fid AND fa.activeflag = 1 
             WHERE f.ftype = 1 AND f.factiveflag = 1 

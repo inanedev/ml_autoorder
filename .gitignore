@@ -1,32 +1,7 @@
 ```
-# SQL-related temporary files
-*.tmp
-*.temp
-*.log
-
-# Environment files
-.env
-.env.local
-*.env.*
-
-# Editor/IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# System files
-.DS_Store
-Thumbs.db
-
-# Cache directories
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Build/dist directories
-dist/
-build/
-target/
+# SQL-related temporary/compiled files
+*.db-shm
+*.db-wal
+*.sqlite-shm
+*.sqlite-wal
 ```
