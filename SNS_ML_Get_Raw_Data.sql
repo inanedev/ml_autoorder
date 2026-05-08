@@ -172,8 +172,7 @@ BEGIN
         IF OBJECT_ID('tempdb..#ItemMap') IS NOT NULL DROP TABLE #ItemMap;
         CREATE TABLE #ItemMap (
             iid INT,
-            CategoryID INT,
-            SourceDB NVARCHAR(128)
+            CategoryID INT
         );
         
         IF OBJECT_ID('tempdb..#PointFeatures') IS NOT NULL DROP TABLE #PointFeatures;
@@ -184,15 +183,13 @@ BEGIN
             Lon FLOAT,
             PointClass NVARCHAR(255),
             PointType NVARCHAR(255),
-            MicroRegionID NVARCHAR(50),
-            SourceDB NVARCHAR(128)
+            MicroRegionID NVARCHAR(50)
         );
         
         IF OBJECT_ID('tempdb..#AllVisits') IS NOT NULL DROP TABLE #AllVisits;
         CREATE TABLE #AllVisits (
             VisitDate DATE,
-            PointID INT,
-            SourceDB NVARCHAR(128)
+            PointID INT
         );
         
         IF OBJECT_ID('tempdb..#SalesAgg') IS NOT NULL DROP TABLE #SalesAgg;
@@ -200,8 +197,7 @@ BEGIN
             VisitDate DATE,
             PointID INT,
             CategoryID INT,
-            SumRoubles DECIMAL(18,2),
-            SourceDB NVARCHAR(128)
+            SumRoubles DECIMAL(18,2)
         );
         
         -- Переменная для динамического SQL и имени БД
@@ -242,16 +238,15 @@ BEGIN
               AND CAST(o.orDate AS DATE) < ''' + CONVERT(NVARCHAR(10), @EndDate, 120) + N''';
             
             -- 2. Справочник активных SKU с категориями
-            INSERT INTO #ItemMap (iid, CategoryID, SourceDB)
+            INSERT INTO #ItemMap (iid, CategoryID)
             SELECT 
                 CAST(i.iid AS INT) as iid, 
-                CAST(i.itID AS INT) AS CategoryID,
-                ''' + @TargetDB + N''' AS SourceDB
+                CAST(i.itID AS INT) AS CategoryID
             FROM ' + @TablePrefix + N'DS_ITEMS i 
             WHERE i.activeFlag = 1 AND i.itID IS NOT NULL;
 
             -- 3. Признаки точек продаж с координатами
-            INSERT INTO #PointFeatures (PointID, BranchID, Lat, Lon, PointClass, PointType, MicroRegionID, SourceDB)
+            INSERT INTO #PointFeatures (PointID, BranchID, Lat, Lon, PointClass, PointType, MicroRegionID)
             SELECT 
                 f.fid AS PointID, 
                 f.distid AS BranchID, 
@@ -272,35 +267,32 @@ BEGIN
                 CAST(
                     FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' 
                     AS VARCHAR(20)
-                ) AS MicroRegionID,
-                ''' + @TargetDB + N''' AS SourceDB
+                ) AS MicroRegionID
             FROM ' + @TablePrefix + N'ds_faces f 
             LEFT JOIN ' + @TablePrefix + N'ds_facesattributes fa ON f.fid = fa.fid AND fa.activeflag = 1 
             WHERE f.ftype = 1 AND f.factiveflag = 1 
             GROUP BY f.fid, f.distid;
 
             -- 4. Извлекаем все визиты из DS_merPointsVisits
-            INSERT INTO #AllVisits (VisitDate, PointID, SourceDB)
+            INSERT INTO #AllVisits (VisitDate, PointID)
             SELECT 
                 CAST(mpv.vdate AS DATE) AS VisitDate,
-                CAST(mpv.fid AS INT) AS PointID,
-                ''' + @TargetDB + N''' AS SourceDB
+                CAST(mpv.fid AS INT) AS PointID
             FROM ' + @TablePrefix + N'DS_merPointsVisits mpv
             WHERE CAST(mpv.vdate AS DATE) >= @StartDateParam
               AND CAST(mpv.vdate AS DATE) < @EndDateParam
             GROUP BY CAST(mpv.vdate AS DATE), CAST(mpv.fid AS INT);
 
             -- 5. Агрегируем продажи по дням, точкам и категориям
-            INSERT INTO #SalesAgg (VisitDate, PointID, CategoryID, SumRoubles, SourceDB)
+            INSERT INTO #SalesAgg (VisitDate, PointID, CategoryID, SumRoubles)
             SELECT 
                 CAST(o.orDate AS DATE) AS VisitDate, 
                 o.mfID AS PointID, 
                 m.CategoryID,
-                SUM(ISNULL(oi.SumRoubles, 0)) AS SumRoubles,
-                ''' + @TargetDB + N''' AS SourceDB
+                SUM(ISNULL(oi.SumRoubles, 0)) AS SumRoubles
             FROM ' + @TablePrefix + N'DS_Orders o 
             INNER JOIN ' + @TablePrefix + N'DS_Orders_Items oi ON o.MasterFID = oi.MasterFID AND o.orID = oi.orID 
-            INNER JOIN #ItemMap m ON CAST(oi.iID AS INT) = m.iid AND m.SourceDB = ''' + @TargetDB + N'''
+            INNER JOIN #ItemMap m ON CAST(oi.iID AS INT) = m.iid
             WHERE o.orType = 1 
               AND o.orDate >= @StartDateParam
               AND o.orDate < @EndDateParam
@@ -322,12 +314,11 @@ BEGIN
                 ISNULL(sa.SumRoubles, 0) AS SumRoubles
             FROM #AllVisits av
             CROSS JOIN #CategoryMatrix cm
-            INNER JOIN #PointFeatures pf ON av.PointID = pf.PointID AND pf.SourceDB = ''' + @TargetDB + N'''
+            INNER JOIN #PointFeatures pf ON av.PointID = pf.PointID
             LEFT JOIN #SalesAgg sa 
                 ON av.VisitDate = sa.VisitDate 
                 AND av.PointID = sa.PointID 
-                AND cm.CategoryID = sa.CategoryID
-                AND sa.SourceDB = ''' + @TargetDB + N''';
+                AND cm.CategoryID = sa.CategoryID;
             ';
             
             EXEC sp_executesql @DynamicSQL, 
