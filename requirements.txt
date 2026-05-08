@@ -3,3 +3,4 @@ pandas>=1.5.0
 python-dotenv>=1.0.0
 catboost>=1.2.0
 scikit-learn>=1.0.0
+holidays>=0.40
