@@ -240,7 +240,7 @@ BEGIN
             -- 2. Справочник активных SKU с категориями
             INSERT INTO #ItemMap (iid, CategoryID)
             SELECT 
-                CAST(i.iid AS INT) as iid, 
+                CAST(i.iid AS INT) AS iid, 
                 CAST(i.itID AS INT) AS CategoryID
             FROM ' + @TablePrefix + N'DS_ITEMS i 
             WHERE i.activeFlag = 1 AND i.itID IS NOT NULL;
@@ -252,8 +252,8 @@ BEGIN
                 f.distid AS BranchID, 
                 
                 -- Координаты (приводим к float)
-                ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) AS Lat,
-                ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) AS Lon,
+                ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), CHAR(32), '''') AS FLOAT) END), 0) AS Lat,
+                ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), CHAR(32), '''') AS FLOAT) END), 0) AS Lon,
                 
                 -- Атрибуты
                 ISNULL(MAX(CASE WHEN fa.attrid = 602 THEN fa.attrtext END), ''Unknown'') AS PointClass,
@@ -261,13 +261,11 @@ BEGIN
                 
                 -- Расчет MicroRegionID (Сетка 3x3 км)
                 CAST(
-                    FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' 
-                    AS VARCHAR(20)
-                ) + ''_'' + 
+                    FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 360 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), CHAR(32), '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' 
+                    AS VARCHAR(20)) + ''_'' + 
                 CAST(
-                    FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), '' '', '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' 
-                    AS VARCHAR(20)
-                ) AS MicroRegionID
+                    FLOOR(ISNULL(MAX(CASE WHEN fa.attrid = 361 THEN CAST(REPLACE(REPLACE(fa.attrtext, '','', ''.''), CHAR(32), '''') AS FLOAT) END), 0) / ' + CAST(@GridStep AS NVARCHAR(20)) + N') * ' + CAST(@GridStep AS NVARCHAR(20)) + N' 
+                    AS VARCHAR(20)) AS MicroRegionID
             FROM ' + @TablePrefix + N'ds_faces f 
             LEFT JOIN ' + @TablePrefix + N'ds_facesattributes fa ON f.fid = fa.fid AND fa.activeflag = 1 
             WHERE f.ftype = 1 AND f.factiveflag = 1 
