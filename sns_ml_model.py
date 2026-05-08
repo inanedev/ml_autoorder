@@ -12,6 +12,9 @@ from sns_ml_add_features import load_and_add_features
 # Импорт функций для работы с тестовыми данными и сохранения предсказаний
 from sns_ml_fetch_data import fetch_test_data, save_predictions_to_sql, check_and_cleanup_predictions_table
 
+# Импорт функций для загрузки лучших параметров
+from sns_ml_hyper import load_best_params
+
 
 
 
@@ -181,20 +184,51 @@ def train_single_model(df: pd.DataFrame,
     # Создаём пулы CatBoost
     train_pool = Pool(X, y, cat_features=cat_features)
     
+    # Пытаемся загрузить лучшие параметры из файла
+    best_params = load_best_params('best_model.json')
+    
     # Параметры модели CatBoost с Tweedie loss
+    # Если лучшие параметры загружены - используем их, иначе - параметры по умолчанию
+    if best_params is not None:
+        variance_power = best_params.get('variance_power', 1.4)
+        iterations = best_params.get('iterations', 3000)
+        learning_rate = best_params.get('learning_rate', 0.01)
+        depth = best_params.get('depth', 6)
+        grow_policy = best_params.get('grow_policy', 'Lossguide')
+        l2_leaf_reg = best_params.get('l2_leaf_reg', 1)
+        max_leaves = best_params.get('max_leaves', 31)
+        random_seed = best_params.get('random_seed', 42)
+        
+        logger.info(f"Используются лучшие параметры из файла best_model.json:")
+        logger.info(f"  variance_power: {variance_power}")
+        logger.info(f"  iterations: {iterations}")
+        logger.info(f"  learning_rate: {learning_rate}")
+        logger.info(f"  depth: {depth}")
+    else:
+        # Параметры по умолчанию
+        variance_power = 1.4
+        iterations = 3000
+        learning_rate = 0.01
+        depth = 6
+        grow_policy = 'Lossguide'
+        l2_leaf_reg = 1
+        max_leaves = 31
+        random_seed = 42
+        logger.info("Файл best_model.json не найден. Используются параметры по умолчанию.")
+    
     model_params = {
-        'iterations': 3000,
-        'learning_rate': 0.01,
-        'depth': 6,
-        'loss_function': 'Tweedie:variance_power=1.4',
+        'iterations': iterations,
+        'learning_rate': learning_rate,
+        'depth': depth,
+        'loss_function': f'Tweedie:variance_power={variance_power}',
         'eval_metric': BiasRatioMetric(),
         'custom_metric':['RMSE', 'MAE'],
-        'random_seed': 42,
+        'random_seed': random_seed,
         'verbose': 100 if verbose else 0,
-        'grow_policy':'Lossguide',
-        'l2_leaf_reg':1,
-        'max_leaves':31
-        }
+        'grow_policy': grow_policy,
+        'l2_leaf_reg': l2_leaf_reg,
+        'max_leaves': max_leaves
+    }
     
     # Создаём и обучаем модель
     logger.info("Обучение модели с функцией потерь Tweedie...")
