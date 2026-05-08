@@ -166,7 +166,7 @@ def objective(trial, X_train: pd.DataFrame, y_train: pd.Series,
         Значение метрики RMSE для минимизации
     """
     # Предлагаемые гиперпараметры
-    variance_power = trial.suggest_categorical('variance_power', [1.5, 1.7, 1.9])
+    variance_power = trial.suggest_categorical('variance_power', [1.2, 1.3, 1.4])
     iterations = trial.suggest_categorical('iterations', [1000, 1500, 3000])
     learning_rate = trial.suggest_categorical('learning_rate', [0.03, 0.05, 0.1])
     depth = trial.suggest_categorical('depth', [4, 6, 8, 10])
