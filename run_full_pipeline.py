@@ -2,7 +2,7 @@
 Единый скрипт для получения рекомендаций по брендам с нуля.
 
 Этот скрипт объединяет все этапы:
-1. Загрузка сырых данных и обучение модели (fetch_raw_data)
+1. Загрузка сырых данных и обучение модели на лучших гиперпараметрах (sns_ml_model.py)
 2. Прогнозирование суммы продаж по категориям для точек
 3. Формирование рекомендаций по брендам (order_recommendation)
 4. Сохранение рекомендаций в БД (save_recommendation)
@@ -18,6 +18,12 @@
     --days-until-visit: Дней до следующего визита (по умолчанию 7)
     --verbose: Включить подробное логгирование
     --skip-save: Не сохранять рекомендации в БД (только вывод на экран)
+    
+Примечание:
+    Перед запуском рекомендуется выполнить оптимизацию гиперпараметров:
+        python sns_ml_hyper.py --n-trials 50
+    Это создаст файл best_model.json с лучшими параметрами для обучения модели.
+    Если файл не найден, модель будет обучена с параметрами по умолчанию.
 """
 
 import argparse
@@ -27,7 +33,9 @@ from typing import Optional, List, Tuple
 import pandas as pd
 
 # Импорт модулей
-from fetch_raw_data import main as fetch_and_train_main, get_connection
+from fetch_raw_data import get_connection
+from sns_ml_model import train_single_model, run_full_pipeline as sns_run_full_pipeline
+from sns_ml_hyper import load_best_params
 from order_recommendation import OrderRecommender
 from save_recommendation import RecommendationStorage
 
@@ -309,37 +317,36 @@ def main():
     
     # ==================== ЭТАП 1: Обучение модели и прогнозирование ====================
     print("\n" + "-"*80)
-    print("ЭТАП 1: Загрузка данных, обучение модели и прогнозирование сумм")
+    print("ЭТАП 1: Загрузка данных, обучение модели на лучших гиперпараметрах и прогнозирование сумм")
     print("-"*80)
     
-    # Формируем аргументы для fetch_raw_data
-    import sys
-    original_argv = sys.argv.copy()
+    # Проверяем наличие файла best_model.json с лучшими гиперпараметрами
+    best_params = load_best_params('best_model.json')
+    if best_params is None:
+        print("\n⚠ ПРЕДУПРЕЖДЕНИЕ: Файл best_model.json не найден!")
+        print("Модель будет обучена с параметрами по умолчанию.")
+        print("Для использования лучших гиперпараметров предварительно запустите:")
+        print("    python sns_ml_hyper.py --n-trials 50")
+        print("Продолжаем работу с параметрами по умолчанию...\n")
+    else:
+        print(f"\n✓ Загружены лучшие гиперпараметры из best_model.json:")
+        print(f"  variance_power: {best_params.get('variance_power', 'N/A')}")
+        print(f"  iterations: {best_params.get('iterations', 'N/A')}")
+        print(f"  learning_rate: {best_params.get('learning_rate', 'N/A')}")
+        print(f"  depth: {best_params.get('depth', 'N/A')}")
+        print()
     
     try:
-        sys.argv = [
-            'fetch_raw_data.py',
-            '--start-date', start_date.strftime('%Y-%m-%d'),
-            '--end-date', end_date.strftime('%Y-%m-%d'),
-        ]
+        # Запускаем полный пайплайн обучения и прогнозирования из sns_ml_model.py
+        # Этот метод использует train_single_model() с загрузкой лучших параметров из best_model.json
+        sns_run_full_pipeline(model_save_path='catboost_model_single.cbm')
         
-        if args.verbose:
-            sys.argv.append('--verbose')
-        
-        if args.skip_install_check:
-            sys.argv.append('--skip-install-check')
-        
-        # Запускаем обучение модели и прогнозирование
-        fetch_and_train_main()
-        
-        print("\n✓ Этап 1 завершен: модель обучена, предсказания сохранены в SNS_ML_Predictions")
+        print("\n✓ Этап 1 завершен: модель обучена на лучших гиперпараметрах, предсказания сохранены в SNS_ML_Predictions")
         
     except Exception as e:
         logger.error(f"Ошибка на этапе 1 (обучение модели): {e}")
         print("\n✗ Ошибка на этапе обучения модели. Пайплайн остановлен.")
         return
-    finally:
-        sys.argv = original_argv
     
     # ==================== ЭТАП 2: Загрузка предсказаний ====================
     print("\n" + "-"*80)
